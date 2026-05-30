@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "src"
+version = "0.1.0"
+description = "ds project for 2026 world cup"
+requires-python = ">=3.14"
+
+dependencies = [
+    "numpy>=2.2",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+    "matplotlib>=3.10",
+    "jupyterlab>=4.3",
+    "ipykernel (>=7.2.0,<8.0.0)",
+    "pymongo (>=4.17.0,<5.0.0)",
+    "dotenv (>=0.9.9,<0.10.0)",
+]
+
