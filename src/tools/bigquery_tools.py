@@ -6,12 +6,14 @@ from __future__ import annotations
 import json
 import os
 from typing import Literal
+import logging
 
 import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
 WriteDisposition = Literal["WRITE_APPEND", "WRITE_TRUNCATE", "WRITE_EMPTY"]
+logger = logging.getLogger(__name__)
 
 
 def _client() -> bigquery.Client:
@@ -21,9 +23,24 @@ def _client() -> bigquery.Client:
     # This is useful on Streamlit Community Cloud where local file paths are not available.
     service_account_info = os.environ.get("GOOGLE_SERVICE_ACCOUNT_INFO", "").strip()
     if service_account_info:
-        info = json.loads(service_account_info)
-        credentials = service_account.Credentials.from_service_account_info(info)
-        return bigquery.Client(project=project_id, credentials=credentials)
+        try:
+            info = json.loads(service_account_info)
+
+            # Common Streamlit-secrets pitfall: private_key is pasted with escaped "\\n"
+            # or left with template placeholders. Normalize and validate before loading.
+            private_key = str(info.get("private_key", ""))
+            if "REPLACE_ME" in private_key or "REPLACE_ME" in str(info.get("private_key_id", "")):
+                raise ValueError("Service account placeholders detected in GOOGLE_SERVICE_ACCOUNT_INFO.")
+            if "\\n" in private_key:
+                info["private_key"] = private_key.replace("\\n", "\n")
+
+            credentials = service_account.Credentials.from_service_account_info(info)
+            return bigquery.Client(project=project_id, credentials=credentials)
+        except Exception as exc:  # pragma: no cover - defensive for runtime secrets issues
+            logger.warning(
+                "Invalid GOOGLE_SERVICE_ACCOUNT_INFO, falling back to default credentials: %s",
+                exc,
+            )
 
     # Local mode: use GOOGLE_APPLICATION_CREDENTIALS file if configured.
     return bigquery.Client(project=project_id)
