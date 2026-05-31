@@ -9,6 +9,7 @@ import os
 import httpx
 import logging
 import re
+import unicodedata
 
 import pandas as pd
 
@@ -62,6 +63,39 @@ def _query_tokens(query: str) -> list[str]:
     return tokens
 
 
+def _normalise_text(text: str) -> str:
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_matchup(query: str) -> tuple[str, str] | None:
+    # Supports "Team A vs Team B" and "Team A v Team B"
+    m = re.search(r"([A-Za-zÀ-ÿ'\- ]+?)\s+v(?:s)?\.?\s+([A-Za-zÀ-ÿ'\- ]+)", query, re.IGNORECASE)
+    if not m:
+        return None
+    team_a = _normalise_text(m.group(1))
+    team_b = _normalise_text(m.group(2))
+    if not team_a or not team_b:
+        return None
+    return team_a, team_b
+
+
+def _is_today_query(query: str) -> bool:
+    q = query.lower()
+    return any(k in q for k in ("today", "tonight", "this evening", "this afternoon", "this morning"))
+
+
+def _row_matches_matchup(row: dict, matchup: tuple[str, str]) -> bool:
+    a, b = matchup
+    home = _normalise_text(str(row.get("home_team", "")))
+    away = _normalise_text(str(row.get("away_team", "")))
+    return (a in home and b in away) or (a in away and b in home)
+
+
 def _table_ref() -> str:
     project = os.environ["BIGQUERY_PROJECT_ID"]
     dataset = os.environ["BIGQUERY_DATASET_ID"]
@@ -101,6 +135,20 @@ def _load_fixtures_from_bq(query: str, season: int | None, limit: int) -> list[d
     if df.empty:
         return []
     return df.to_dict(orient="records")
+
+
+def _api_fetch_fixtures_for_date(date_value: dt.date) -> list[dict]:
+    params = {
+        "date": date_value.isoformat(),
+        "timezone": "UTC",
+    }
+    try:
+        data = _get("fixtures", params)
+    except httpx.HTTPError as exc:
+        logger.warning("API-Football request failed in date fixture fetch: %s", exc)
+        return []
+    response = data.get("response", [])
+    return [_normalise_fixture_with_season(fix) for fix in response]
 
 
 def _normalise_fixture_with_season(fix: dict) -> dict:
@@ -144,7 +192,17 @@ def _api_fetch_fixtures(query: str, season: int | None) -> list[dict]:
     return [_normalise_fixture_with_season(fix) for fix in response]
 
 
-def _filter_rows_by_query(rows: list[dict], query: str, limit: int) -> list[dict]:
+def _filter_rows_by_query(
+    rows: list[dict],
+    query: str,
+    limit: int,
+    matchup: tuple[str, str] | None = None,
+) -> list[dict]:
+    if matchup:
+        matched = [row for row in rows if _row_matches_matchup(row, matchup)]
+        if matched:
+            return matched[:limit]
+
     tokens = _query_tokens(query)
     if not tokens:
         return rows[:limit]
@@ -168,17 +226,27 @@ def get_fixtures_cache_first(query: str, limit: int = 5) -> tuple[list[dict], st
     3) Persist API result into BigQuery for future requests
     """
     season = _extract_season(query)
+    matchup = _extract_matchup(query)
 
-    cached = _load_fixtures_from_bq(query=query, season=season, limit=limit)
-    if cached:
-        return cached, "bigquery"
+    # Live-date intent (e.g. "today") should query all competitions, not only World Cup.
+    if _is_today_query(query):
+        today_rows = _api_fetch_fixtures_for_date(dt.datetime.utcnow().date())
+        live_filtered = _filter_rows_by_query(today_rows, query=query, limit=limit, matchup=matchup)
+        if live_filtered:
+            return live_filtered, "api"
+
+    bq_limit = max(limit, 50) if matchup else limit
+    cached = _load_fixtures_from_bq(query=query, season=season, limit=bq_limit)
+    cached_filtered = _filter_rows_by_query(cached, query=query, limit=limit, matchup=matchup)
+    if cached_filtered:
+        return cached_filtered, "bigquery"
 
     api_rows = _api_fetch_fixtures(query=query, season=season)
     if not api_rows:
         return [], "none"
 
     _store_fixtures_in_bq(api_rows)
-    filtered = _filter_rows_by_query(api_rows, query=query, limit=limit)
+    filtered = _filter_rows_by_query(api_rows, query=query, limit=limit, matchup=matchup)
     return filtered, "api"
 
 
