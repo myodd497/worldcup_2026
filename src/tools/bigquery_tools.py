@@ -16,6 +16,21 @@ WriteDisposition = Literal["WRITE_APPEND", "WRITE_TRUNCATE", "WRITE_EMPTY"]
 logger = logging.getLogger(__name__)
 
 
+def _validate_private_key(private_key: str, private_key_id: str) -> str:
+    """Normalizes and validates service-account private key text."""
+    key = (private_key or "").replace("\\n", "\n").strip()
+    key_id = (private_key_id or "").strip()
+
+    placeholders = ("REPLACE_ME", "YOUR_PRIVATE_KEY", "<PRIVATE_KEY>", "PRIVATE_KEY")
+    if any(marker in key for marker in placeholders) or any(marker in key_id for marker in placeholders):
+        raise ValueError("Service account placeholders detected in GOOGLE_SERVICE_ACCOUNT_INFO.")
+
+    if "BEGIN PRIVATE KEY" not in key or "END PRIVATE KEY" not in key:
+        raise ValueError("Invalid service account private_key format.")
+
+    return key
+
+
 def _client() -> bigquery.Client:
     project_id = os.environ["BIGQUERY_PROJECT_ID"]
 
@@ -26,13 +41,10 @@ def _client() -> bigquery.Client:
         try:
             info = json.loads(service_account_info)
 
-            # Common Streamlit-secrets pitfall: private_key is pasted with escaped "\\n"
-            # or left with template placeholders. Normalize and validate before loading.
-            private_key = str(info.get("private_key", ""))
-            if "REPLACE_ME" in private_key or "REPLACE_ME" in str(info.get("private_key_id", "")):
-                raise ValueError("Service account placeholders detected in GOOGLE_SERVICE_ACCOUNT_INFO.")
-            if "\\n" in private_key:
-                info["private_key"] = private_key.replace("\\n", "\n")
+            info["private_key"] = _validate_private_key(
+                str(info.get("private_key", "")),
+                str(info.get("private_key_id", "")),
+            )
 
             credentials = service_account.Credentials.from_service_account_info(info)
             return bigquery.Client(project=project_id, credentials=credentials)

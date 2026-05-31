@@ -21,11 +21,11 @@ def _hydrate_env_from_streamlit_secrets() -> None:
     src.tools.bigquery_tools._client.
     """
     for key, value in st.secrets.items():
-        if isinstance(value, (str, int, float, bool)) and key not in os.environ:
+        if isinstance(value, (str, int, float, bool)):
             os.environ[key] = str(value)
 
     gcp_info = st.secrets.get("gcp_service_account")
-    if gcp_info and "GOOGLE_SERVICE_ACCOUNT_INFO" not in os.environ:
+    if gcp_info:
         os.environ["GOOGLE_SERVICE_ACCOUNT_INFO"] = json.dumps(dict(gcp_info))
 
 
