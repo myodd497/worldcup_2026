@@ -4,42 +4,69 @@ for a given match query.
 """
 from __future__ import annotations
 
-from src.tools.api_football import get_next_match
+from src.tools.api_football import get_fixtures_cache_first
 from src.tools.weather import get_venue_weather
 
 
 def run_structured(query: str) -> dict:
-    match = get_next_match(query)
-    if not match:
+    fixtures, source = get_fixtures_cache_first(query=query, limit=5)
+    if not fixtures:
         return {
-            "answer": f"Could not find an upcoming match for: {query}",
+            "answer": f"Could not find match data for: {query}",
             "confidence_score": 0.3,
-            "confidence_reason": "No matching fixture in available schedule.",
-            "metadata": {"has_match": False},
+            "confidence_reason": "No matching fixture in BigQuery cache and API returned no matching results.",
+            "metadata": {"has_match": False, "data_source": "none"},
         }
 
-    weather = get_venue_weather(match["venue_city"])
+    wants_list = "list" in query.lower() or "matches" in query.lower() or "results" in query.lower()
 
-    home = match["home_team"]
-    away = match["away_team"]
+    if wants_list:
+        lines = ["*Matches found:*", f"📦 Source: {source}"]
+        for row in fixtures:
+            home = row.get("home_team", "Unknown")
+            away = row.get("away_team", "Unknown")
+            season = row.get("season", "?")
+            date = str(row.get("date", ""))[:10]
+            hg = row.get("home_goals")
+            ag = row.get("away_goals")
+            score = "TBD" if hg is None or ag is None else f"{hg}-{ag}"
+            lines.append(f"- {date} ({season}) | {home} vs {away} | {score}")
+
+        confidence_score = 0.9 if source == "bigquery" else 0.7
+        confidence_reason = (
+            "Data served from BigQuery cache."
+            if source == "bigquery"
+            else "Data fetched from API and stored in BigQuery cache."
+        )
+        return {
+            "answer": "\n".join(lines),
+            "confidence_score": confidence_score,
+            "confidence_reason": confidence_reason,
+            "metadata": {"has_match": True, "data_source": source, "count": len(fixtures)},
+        }
+
+    match = fixtures[0]
+    weather = get_venue_weather(str(match.get("venue_city", "")))
+
+    home = str(match.get("home_team", "Unknown"))
+    away = str(match.get("away_team", "Unknown"))
     lines = [
         f"*{home} vs {away}*",
-        f"📅 {match['date']} | 🏟 {match['venue']}, {match['venue_city']}",
+        f"📦 Source: {source}",
+        f"📅 {match.get('date', 'TBD')} | 🏟 {match.get('venue', 'TBD')}, {match.get('venue_city', 'TBD')}",
         f"🌤 Weather: {weather['description']}, {weather['temp_c']:.0f}°C",
         f"👨‍⚖️ Referee: {match.get('referee', 'TBD')}",
         "",
-        f"*{home} lineup:* {', '.join(match.get('home_lineup', ['TBD']))}",
-        f"*{away} lineup:* {', '.join(match.get('away_lineup', ['TBD']))}",
+        f"*Result:* {match.get('home_goals', 'TBD')} - {match.get('away_goals', 'TBD')}",
     ]
-    lineup_known = bool(match.get("home_lineup")) and bool(match.get("away_lineup"))
-    score = 0.9 if lineup_known else 0.7
-    reason = "Confirmed lineups available." if lineup_known else "Fixture and venue verified, lineups not confirmed yet."
+    score = 0.9 if source == "bigquery" else 0.7
+    reason = "Data served from BigQuery cache." if source == "bigquery" else "Data fetched from API and stored in BigQuery cache."
 
     return {
         "answer": "\n".join(lines),
         "confidence_score": score,
         "confidence_reason": reason,
-        "metadata": {"has_match": True, "lineup_known": lineup_known},
+        "metadata": {"has_match": True, "data_source": source},
     }
 
 

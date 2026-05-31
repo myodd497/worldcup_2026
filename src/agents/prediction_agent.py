@@ -6,7 +6,7 @@ from src.models.predict import predict_match
 from langchain_openai import ChatOpenAI
 
 
-_llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
 
 
 def run_structured(query: str) -> dict:
@@ -41,18 +41,29 @@ def run_structured(query: str) -> dict:
     )
 
     model_version = probs.get("model_version", "unknown")
+    data_source = probs.get("data_source", "unknown")
     if model_version == "fallback_uniform":
         score = 0.4
         reason = "Fallback probabilities used because trained model features are not available."
+    elif model_version == "bq_heuristic_v1" and data_source == "bigquery":
+        score = 0.85
+        reason = "Prediction computed from historical BigQuery data (cache-first, no API call)."
+    elif model_version == "bq_heuristic_v1" and data_source == "api_then_bigquery":
+        score = 0.7
+        reason = "BigQuery cache miss: fetched from API once, stored in BigQuery, then predicted."
     else:
-        score = 0.8
-        reason = "Probabilities produced by trained model and contextualized by LLM."
+        score = 0.6
+        reason = "Prediction generated with limited features; treat as directional guidance."
 
     return {
         "answer": answer,
         "confidence_score": score,
         "confidence_reason": reason,
-        "metadata": {"model_version": model_version},
+        "metadata": {
+            "model_version": model_version,
+            "data_source": data_source,
+            "samples": probs.get("samples", {}),
+        },
     }
 
 

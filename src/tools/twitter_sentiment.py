@@ -4,18 +4,32 @@ Twitter/X sentiment tool — fetches recent tweets and scores them with VADER.
 from __future__ import annotations
 
 import os
-import tweepy
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
-_analyzer = SentimentIntensityAnalyzer()
+def _is_social_sentiment_enabled() -> bool:
+    return os.getenv("ENABLE_SOCIAL_SENTIMENT", "false").lower() == "true"
 
 
-def _get_client() -> tweepy.Client:
+def _get_client():
+    import tweepy
+
     return tweepy.Client(bearer_token=os.environ["TWITTER_BEARER_TOKEN"])
 
 
 def get_sentiment_summary(query: str, max_results: int = 50) -> dict:
+    if not _is_social_sentiment_enabled():
+        return {
+            "tweet_count": 0,
+            "positive_pct": 0.0,
+            "negative_pct": 0.0,
+            "neutral_pct": 100.0,
+            "top_topic": query,
+            "sample_tweets": [],
+        }
+
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+    analyzer = SentimentIntensityAnalyzer()
     client = _get_client()
     response = client.search_recent_tweets(
         query=f"{query} -is:retweet lang:en",
@@ -33,7 +47,7 @@ def get_sentiment_summary(query: str, max_results: int = 50) -> dict:
             "top_topic": "",
         }
 
-    scores = [_analyzer.polarity_scores(t) for t in tweets]
+    scores = [analyzer.polarity_scores(t) for t in tweets]
     positive = sum(1 for s in scores if s["compound"] >= 0.05)
     negative = sum(1 for s in scores if s["compound"] <= -0.05)
     neutral = len(scores) - positive - negative

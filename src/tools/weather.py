@@ -9,7 +9,21 @@ import httpx
 _BASE = "https://api.openweathermap.org/data/2.5/weather"
 
 
+def _is_weather_enabled() -> bool:
+    return os.getenv("ENABLE_WEATHER", "false").lower() == "true"
+
+
 def get_venue_weather(city: str) -> dict:
+    if not _is_weather_enabled():
+        return {
+            "city": city,
+            "temp_c": 22.0,
+            "feels_like_c": 22.0,
+            "humidity_pct": 50,
+            "description": "Weather disabled (test mode)",
+            "wind_mps": 0.0,
+        }
+
     params = {
         "q": city,
         "appid": os.environ["OPENWEATHER_API_KEY"],

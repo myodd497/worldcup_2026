@@ -9,14 +9,13 @@ import httpx
 import pandas as pd
 from src.tools.bigquery_tools import upload_dataframe
 
-_BASE = "https://api-football-v1.p.rapidapi.com/v3"
+_BASE = "https://v3.football.api-sports.io"
 _HEADERS = {
-    "X-RapidAPI-Key": os.environ.get("API_FOOTBALL_KEY", ""),
-    "X-RapidAPI-Host": os.environ.get("API_FOOTBALL_HOST", "api-football-v1.p.rapidapi.com"),
+    "x-apisports-key": os.environ.get("API_FOOTBALL_KEY", ""),
 }
 
 # Past World Cup league IDs: 2018=1, 2022=1 (same league, different seasons)
-SEASONS = [2018, 2022]
+SEASONS = [2018, 2022,2026]
 WC_LEAGUE_ID = 1
 BQ_TABLE = "fixtures_historical"
 

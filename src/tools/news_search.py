@@ -7,8 +7,15 @@ import os
 from typing import Any
 
 
+def _is_news_enabled() -> bool:
+    return os.getenv("ENABLE_NEWS", "false").lower() == "true"
+
+
 def search_news(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Returns a list of article dicts: title, url, source, published_at."""
+    if not _is_news_enabled():
+        return []
+
     try:
         return _tavily_search(query, max_results)
     except Exception:

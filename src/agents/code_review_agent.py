@@ -11,7 +11,7 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 
 def review_code(code: str) -> dict[str, str]:
