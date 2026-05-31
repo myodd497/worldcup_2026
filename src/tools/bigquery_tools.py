@@ -3,17 +3,30 @@ BigQuery tools — upload a DataFrame and run SQL queries.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Literal
 
 import pandas as pd
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 WriteDisposition = Literal["WRITE_APPEND", "WRITE_TRUNCATE", "WRITE_EMPTY"]
 
 
 def _client() -> bigquery.Client:
-    return bigquery.Client(project=os.environ["BIGQUERY_PROJECT_ID"])
+    project_id = os.environ["BIGQUERY_PROJECT_ID"]
+
+    # Cloud mode: credentials passed as JSON payload in env var.
+    # This is useful on Streamlit Community Cloud where local file paths are not available.
+    service_account_info = os.environ.get("GOOGLE_SERVICE_ACCOUNT_INFO", "").strip()
+    if service_account_info:
+        info = json.loads(service_account_info)
+        credentials = service_account.Credentials.from_service_account_info(info)
+        return bigquery.Client(project=project_id, credentials=credentials)
+
+    # Local mode: use GOOGLE_APPLICATION_CREDENTIALS file if configured.
+    return bigquery.Client(project=project_id)
 
 
 def _table_ref(table_name: str) -> str:

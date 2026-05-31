@@ -6,10 +6,30 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 
 import streamlit as st
 
 from src.agents.orchestrator import run_orchestrator
+
+
+def _hydrate_env_from_streamlit_secrets() -> None:
+    """Copies Streamlit secrets into process env for downstream libraries.
+
+    Also converts [gcp_service_account] TOML section into a JSON env var used by
+    src.tools.bigquery_tools._client.
+    """
+    for key, value in st.secrets.items():
+        if isinstance(value, (str, int, float, bool)) and key not in os.environ:
+            os.environ[key] = str(value)
+
+    gcp_info = st.secrets.get("gcp_service_account")
+    if gcp_info and "GOOGLE_SERVICE_ACCOUNT_INFO" not in os.environ:
+        os.environ["GOOGLE_SERVICE_ACCOUNT_INFO"] = json.dumps(dict(gcp_info))
+
+
+_hydrate_env_from_streamlit_secrets()
 
 
 st.set_page_config(page_title="World Cup 2026 Chat", page_icon="⚽", layout="centered")
