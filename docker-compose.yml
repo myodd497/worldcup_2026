@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./bin:/app/bin          # persist models, docs, mlruns locally
+      - ./src:/app/src          # hot-reload during dev (remove for prod)
+    command: uvicorn src.server.app:app --host 0.0.0.0 --port 8080 --reload
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.15.1
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./bin/mlruns:/mlruns
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlruns
+
+volumes: {}
