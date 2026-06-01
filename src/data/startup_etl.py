@@ -12,6 +12,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from src.tools.api_usage_tracker import get_api_usage_snapshot, reset_api_usage
+
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
@@ -142,6 +144,7 @@ def run_full_etl_once(trigger: str, force: bool = False) -> dict[str, object]:
             return {"ran": False, "skipped": True, "reason": "already_ran"}
 
         start = time.time()
+        reset_api_usage()
         logger.info("Starting full ETL pipeline (trigger=%s)", trigger)
 
         try:
@@ -162,6 +165,7 @@ def run_full_etl_once(trigger: str, force: bool = False) -> dict[str, object]:
             _HAS_RUN = True
             duration_s = round(time.time() - start, 2)
             finished_at = datetime.now(timezone.utc)
+            api_usage = get_api_usage_snapshot()
             _record_status(
                 run_id=run_id,
                 trigger=trigger,
@@ -170,11 +174,28 @@ def run_full_etl_once(trigger: str, force: bool = False) -> dict[str, object]:
                 finished_at=finished_at,
                 duration_s=duration_s,
             )
-            logger.info("Full ETL pipeline completed in %ss", duration_s)
-            return {"ran": True, "skipped": False, "duration_s": duration_s}
+            logger.info(
+                "Full ETL pipeline completed in %ss (api_calls=%s, remaining=%s)",
+                duration_s,
+                api_usage.get("total_calls"),
+                api_usage.get("requests_remaining"),
+            )
+            return {
+                "ran": True,
+                "skipped": False,
+                "duration_s": duration_s,
+                "api_usage": api_usage,
+            }
         except Exception as exc:
             duration_s = round(time.time() - start, 2)
             finished_at = datetime.now(timezone.utc)
+            api_usage = get_api_usage_snapshot()
+            logger.exception(
+                "Full ETL pipeline failed after %ss (api_calls=%s, remaining=%s)",
+                duration_s,
+                api_usage.get("total_calls"),
+                api_usage.get("requests_remaining"),
+            )
             _record_status(
                 run_id=run_id,
                 trigger=trigger,
