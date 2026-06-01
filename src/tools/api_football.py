@@ -11,9 +11,7 @@ import logging
 import re
 import unicodedata
 
-import pandas as pd
-
-from src.tools.bigquery_tools import run_query, upload_dataframe
+from src.tools.bigquery_tools import run_query
 
 _BASE = "https://v3.football.api-sports.io"
 _HEADERS = {
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # World Cup 2026 league ID (confirm once tournament starts)
 WC_LEAGUE_ID = 1
-BQ_TABLE = "fixtures_historical"
+FACT_TABLE = "fact_fixture"
 _QUERY_TOKEN_LIMIT = 6
 
 _STOPWORDS = {
@@ -99,7 +97,7 @@ def _row_matches_matchup(row: dict, matchup: tuple[str, str]) -> bool:
 def _table_ref() -> str:
     project = os.environ["BIGQUERY_PROJECT_ID"]
     dataset = os.environ["BIGQUERY_DATASET_ID"]
-    return f"`{project}.{dataset}.{BQ_TABLE}`"
+    return f"`{project}.{dataset}.{FACT_TABLE}`"
 
 
 def _filter_clauses(tokens: list[str]) -> str:
@@ -109,7 +107,7 @@ def _filter_clauses(tokens: list[str]) -> str:
     for tok in tokens:
         safe = tok.replace("'", "")
         parts.append(
-            f"(LOWER(home_team) LIKE '%{safe}%' OR LOWER(away_team) LIKE '%{safe}%')"
+            f"(LOWER(home_team_name) LIKE '%{safe}%' OR LOWER(away_team_name) LIKE '%{safe}%')"
         )
     return " OR ".join(parts)
 
@@ -119,12 +117,21 @@ def _load_fixtures_from_bq(query: str, season: int | None, limit: int) -> list[d
     where_team = _filter_clauses(tokens)
     season_clause = f"AND season = {season}" if season is not None else ""
     sql = f"""
-    SELECT fixture_id, season, date, venue, venue_city, referee, status,
-           home_team, away_team, home_goals, away_goals
+        SELECT fixture_id,
+            season,
+            CAST(fixture_datetime AS STRING) AS date,
+            venue_name AS venue,
+            venue_city,
+            referee,
+            status,
+            home_team_name AS home_team,
+            away_team_name AS away_team,
+            home_goals,
+            away_goals
     FROM {_table_ref()}
     WHERE ({where_team})
       {season_clause}
-    ORDER BY date DESC
+        ORDER BY fixture_datetime DESC
     LIMIT {int(limit)}
     """
     try:
@@ -168,12 +175,9 @@ def _normalise_fixture_with_season(fix: dict) -> dict:
 
 
 def _store_fixtures_in_bq(rows: list[dict]) -> None:
-    if not rows:
-        return
-    try:
-        upload_dataframe(pd.DataFrame(rows), BQ_TABLE)
-    except Exception as exc:  # pragma: no cover - defensive for runtime env issues
-        logger.warning("BigQuery write-back failed: %s", exc)
+    # Runtime app path is read-only for semantic-model tables.
+    # Ingestion and semantic-build jobs are the only writers.
+    _ = rows
 
 
 def _api_fetch_fixtures(query: str, season: int | None) -> list[dict]:
@@ -223,7 +227,6 @@ def get_fixtures_cache_first(query: str, limit: int = 5) -> tuple[list[dict], st
     Cache-first fixtures lookup:
     1) Read from BigQuery
     2) If cache miss, fetch from API-Football
-    3) Persist API result into BigQuery for future requests
     """
     season = _extract_season(query)
     matchup = _extract_matchup(query)
@@ -245,7 +248,6 @@ def get_fixtures_cache_first(query: str, limit: int = 5) -> tuple[list[dict], st
     if not api_rows:
         return [], "none"
 
-    _store_fixtures_in_bq(api_rows)
     filtered = _filter_rows_by_query(api_rows, query=query, limit=limit, matchup=matchup)
     return filtered, "api"
 
