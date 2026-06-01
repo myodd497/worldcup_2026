@@ -57,15 +57,27 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 
-def _run_orchestrator_sync(user_message: str, user_id: str) -> str:
+def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history: list[dict[str, str]] | None = None) -> str:
     """Executes async orchestrator from Streamlit sync context."""
     try:
-        return asyncio.run(run_orchestrator(user_message=user_message, user_id=user_id))
+        return asyncio.run(
+            run_orchestrator(
+                user_message=user_message,
+                user_id=user_id,
+                conversation_history=conversation_history,
+            )
+        )
     except RuntimeError:
         # Fallback in case an event loop is already running in this process.
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(run_orchestrator(user_message=user_message, user_id=user_id))
+            return loop.run_until_complete(
+                run_orchestrator(
+                    user_message=user_message,
+                    user_id=user_id,
+                    conversation_history=conversation_history,
+                )
+            )
         finally:
             loop.close()
 
@@ -78,7 +90,9 @@ if prompt:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            reply = _run_orchestrator_sync(prompt, st.session_state.user_id)
+            # Send only prior turns as context; current prompt is passed separately.
+            history = st.session_state.messages[:-1]
+            reply = _run_orchestrator_sync(prompt, st.session_state.user_id, history)
         st.markdown(reply)
 
     st.session_state.messages.append({"role": "assistant", "content": reply})
