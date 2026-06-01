@@ -37,7 +37,7 @@ class OrchestratorState(TypedDict):
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 _INTENTS = ["news", "sentiment", "match_facts", "prediction", "chat"]
-_AGENTS = ["news", "sentiment", "match_facts", "prediction", "chat"]
+_AGENTS = ["news", "sentiment", "match_facts", "prediction", "bigquery", "chat"]
 
 _INTENT_PROMPT = """\
 You are a routing manager for a football assistant.
@@ -84,12 +84,14 @@ Available agents:
 - sentiment: fan/social sentiment.
 - match_facts: fixtures, results, standings, venues, referees, historical facts.
 - prediction: win/draw/loss probabilities.
+- bigquery: warehouse SQL over canonical fact/dim tables and gold views.
 - chat: generic conversation.
 
 Selection rules:
 - Choose ALL agents that are useful for the question (not only one).
-- If the user asks for prediction/forecast, include both prediction and match_facts.
-- If the user asks for factual match data, include match_facts.
+- If the user asks for prediction/forecast, include both prediction and match_facts and bigquery
+- If the user asks for factual match data, include match_facts and bigquery.
+- If the user asks for counts, comparisons, listings, tables, schemas, or analytics, include bigquery.
 - Use chat only for clearly generic conversation.
 - Keep between 1 and 3 agents.
 
@@ -132,6 +134,39 @@ def _build_contextual_user_message(state: OrchestratorState) -> str:
     )
 
 
+def _looks_like_bigquery_request(message: str, intent: str) -> bool:
+    q = message.lower()
+    if intent in {"match_facts", "prediction"}:
+        return True
+    keywords = (
+        "count",
+        "how many",
+        "average",
+        "avg",
+        "top",
+        "compare",
+        "comparison",
+        "trend",
+        "table",
+        "tables",
+        "schema",
+        "column",
+        "columns",
+        "list",
+        "show",
+        "available",
+        "what do we have",
+        "head to head",
+        "recent form",
+        "next game",
+        "next match",
+        "prediction features",
+        "standings",
+        "fixtures",
+    )
+    return any(keyword in q for keyword in keywords)
+
+
 # ── Nodes ────────────────────────────────────────────────────────────────────
 
 def classify_intent(state: OrchestratorState) -> OrchestratorState:
@@ -162,12 +197,15 @@ def route_request(state: OrchestratorState) -> OrchestratorState:
     fallback_mapping = {
         "news": ["news", "match_facts"],
         "sentiment": ["sentiment", "news"],
-        "match_facts": ["match_facts"],
-        "prediction": ["prediction", "match_facts"],
+        "match_facts": ["bigquery", "match_facts"],
+        "prediction": ["bigquery", "prediction", "match_facts"],
         "chat": ["chat"],
     }
 
     selected_agents = fallback_mapping.get(state["intent"], ["chat"])
+    if _looks_like_bigquery_request(state["user_message"], state["intent"]):
+        if "bigquery" not in selected_agents:
+            selected_agents = ["bigquery"] + selected_agents
     try:
         raw = _llm.invoke(
             _AGENT_PLANNER_PROMPT.format(
@@ -224,6 +262,11 @@ def _run_prediction(state: OrchestratorState) -> dict[str, Any]:
     return run_prediction(_build_contextual_user_message(state))
 
 
+def _run_bigquery(state: OrchestratorState) -> dict[str, Any]:
+    from src.agents.bigquery_agent import run_structured as run_bigquery
+    return run_bigquery(_build_contextual_user_message(state))
+
+
 def _run_chat(state: OrchestratorState) -> dict[str, Any]:
     answer = _llm.invoke(
         _CHAT_PROMPT.format(
@@ -245,6 +288,7 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
         "sentiment": _run_sentiment,
         "match_facts": _run_match_facts,
         "prediction": _run_prediction,
+        "bigquery": _run_bigquery,
         "chat": _run_chat,
     }
 
