@@ -179,6 +179,29 @@ def _fallback_answer(query: str, reason: str) -> dict:
                 "metadata": {"has_match": False, "data_source": "web_summary", "count": len(web_hits)},
             }
 
+        title_lines = []
+        for item in web_hits[:3]:
+            title = str(item.get("title", "")).strip()
+            source = str(item.get("source", "web")).strip()
+            if title:
+                title_lines.append(f"- {title} ({source})")
+
+        if title_lines:
+            prompt = (
+                "You are a football assistant. Write a concise factual summary using only these web result titles. "
+                "Do not output links. If uncertain, say it is based on title-level evidence.\n\n"
+                f"User question: {query}\n\n"
+                "Titles:\n"
+                + "\n".join(title_lines)
+            )
+            title_summary = _llm.invoke(prompt).content.strip()
+            return {
+                "answer": title_summary,
+                "confidence_score": 0.42,
+                "confidence_reason": f"{reason} Used title-level web summary fallback.",
+                "metadata": {"has_match": False, "data_source": "web_title_summary", "count": len(web_hits)},
+            }
+
         return {
             "answer": "I couldn't confirm this from internal data, but web sources indicate relevant context exists. Please ask a slightly more specific question and I will refine it.",
             "confidence_score": 0.45,
