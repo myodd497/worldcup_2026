@@ -17,3 +17,15 @@ def run() -> dict[str, object]:
 if __name__ == "__main__":
     result = run()
     print(result)
+    usage = result.get("api_usage") if isinstance(result, dict) else None
+    if isinstance(usage, dict):
+        print("=" * 60)
+        print("API Usage Summary")
+        print(f"Total API calls: {usage.get('total_calls')}")
+        print(f"Requests remaining: {usage.get('requests_remaining')}")
+        print(f"Requests limit: {usage.get('requests_limit')}")
+        print(f"Calls by endpoint: {usage.get('calls_by_endpoint')}")
+        quota_headers = usage.get("last_quota_headers")
+        if quota_headers:
+            print(f"Quota headers: {quota_headers}")
+        print("=" * 60)
