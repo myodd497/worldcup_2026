@@ -7,6 +7,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import date
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -229,6 +230,29 @@ def _fallback_answer(query: str, reason: str) -> dict:
     }
 
 
+def _is_countdown_query(query: str) -> bool:
+    q = query.lower()
+    return (
+        "world cup" in q or "fifa" in q
+    ) and any(term in q for term in ("days until", "days left", "how many days", "countdown", "how long until"))
+
+
+def _countdown_answer() -> dict:
+    start_date = date(2026, 6, 11)
+    today = date.today()
+    days_left = (start_date - today).days
+    return {
+        "answer": (
+            "The FIFA Men's World Cup 2026 starts on June 11, 2026.\n"
+            f"Today: {today.isoformat()}\n"
+            f"Days left: {days_left}"
+        ),
+        "confidence_score": 0.98,
+        "confidence_reason": "Countdown computed directly from the fixed World Cup 2026 start date.",
+        "metadata": {"has_match": True, "data_source": "calendar", "count": 1},
+    }
+
+
 def _dedupe_fixtures(rows: list[dict]) -> list[dict]:
     seen: set[tuple] = set()
     unique: list[dict] = []
@@ -332,6 +356,9 @@ def _template_fixtures_answer(query: str, source: str, fixtures: list[dict]) -> 
 
 
 def run_structured(query: str) -> dict:
+    if _is_countdown_query(query):
+        return _countdown_answer()
+
     fixtures, source = get_fixtures_cache_first(query=query, limit=5)
     if not fixtures:
         return _fallback_answer(
