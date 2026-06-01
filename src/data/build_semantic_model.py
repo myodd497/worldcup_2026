@@ -12,7 +12,18 @@ from __future__ import annotations
 
 import os
 
-from src.tools.bigquery_tools import execute_sql, run_query
+from src.tools import bigquery_tools as _bq_tools
+
+run_query = _bq_tools.run_query
+
+if hasattr(_bq_tools, "execute_sql"):
+  execute_sql = _bq_tools.execute_sql
+else:
+  def execute_sql(sql: str) -> None:
+    """Compatibility fallback for older deployments missing execute_sql."""
+    client = _bq_tools._client()
+    job = client.query(sql)
+    job.result()
 
 
 def _ref(dataset: str, name: str) -> str:
