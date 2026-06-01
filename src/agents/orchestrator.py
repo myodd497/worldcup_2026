@@ -33,15 +33,33 @@ class OrchestratorState(TypedDict):
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-_INTENTS = ["news", "sentiment", "match_facts", "prediction", "other"]
+_INTENTS = ["news", "sentiment", "match_facts", "prediction", "chat"]
 
 _INTENT_PROMPT = """\
-Classify the following user message into exactly one of these intents:
-{intents}
+You are a routing manager for a football assistant.
+
+Task:
+- Classify the user message into exactly one of: {intents}
+
+Routing policy:
+- `match_facts`: schedules, fixtures, results, standings, historical matches, lineups, venues, referees.
+- `prediction`: user asks for forecast, probability, odds, who will win.
+- `sentiment`: user asks fan sentiment, public opinion, social reaction.
+- `news`: user asks for latest updates, headlines, rumours, transfers, injuries from media/web.
+- `chat`: generic conversation, ambiguous football talk, greetings, or any request that does not clearly fit above.
 
 User message: "{message}"
 
-Reply with only the intent label, nothing else.
+Reply with only one label and nothing else.
+""".strip()
+
+
+_CHAT_PROMPT = """\
+You are a helpful football assistant.
+Keep the reply conversational and concise.
+If the user asks for data-heavy details (fixtures, results, standings, predictions), gently ask a short follow-up question.
+
+User message: "{message}"
 """.strip()
 
 
@@ -49,22 +67,14 @@ Reply with only the intent label, nothing else.
 
 def classify_intent(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
-    query = state["user_message"].lower()
-    
-    # Pre-classify heuristic for list/games queries → match_facts
-    list_keywords = {"list", "games", "matches", "results", "fixtures", "upcoming", "next", "schedule"}
-    if any(kw in query for kw in list_keywords):
-        intent = "match_facts"
-    else:
-        # Fall back to LLM for other intents
-        prompt = _INTENT_PROMPT.format(
-            intents=", ".join(_INTENTS),
-            message=state["user_message"],
-        )
-        intent = _llm.invoke(prompt).content.strip().lower()
-        if intent not in _INTENTS:
-            intent = "other"
-    
+    prompt = _INTENT_PROMPT.format(
+        intents=", ".join(_INTENTS),
+        message=state["user_message"],
+    )
+    intent = _llm.invoke(prompt).content.strip().lower()
+    if intent not in _INTENTS:
+        intent = "chat"
+
     result = {**state, "intent": intent}
     tracker.log_step(
         "classify",
@@ -83,9 +93,9 @@ def route_request(state: OrchestratorState) -> OrchestratorState:
         "sentiment": "sentiment",
         "match_facts": "match_facts",
         "prediction": "prediction",
-        "other": "other",
+        "chat": "chat",
     }
-    selected = mapping.get(state["intent"], "other")
+    selected = mapping.get(state["intent"], "chat")
     result = {**state, "selected_agent": selected}
     tracker.log_step(
         "router",
@@ -168,18 +178,19 @@ def prediction_node(state: OrchestratorState) -> OrchestratorState:
     return result
 
 
-def other_node(state: OrchestratorState) -> OrchestratorState:
+def chat_node(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
+    answer = _llm.invoke(_CHAT_PROMPT.format(message=state["user_message"])).content.strip()
     result = {
         **state,
         "agent_payload": {
-            "answer": "I can help with: news, sentiment, match facts, and predictions. Try asking about a specific game!",
-            "confidence_score": 0.75,
-            "confidence_reason": "General guidance response.",
+            "answer": answer,
+            "confidence_score": 0.7,
+            "confidence_reason": "Conversational response from LLM manager path.",
         },
     }
     tracker.log_step(
-        "other_agent",
+        "chat_agent",
         status="executed",
         input_data={"user_message": state["user_message"][:100]},
         output_data={
@@ -268,7 +279,7 @@ def _build_graph() -> StateGraph:
     g.add_node("sentiment", sentiment_node)
     g.add_node("match_facts", match_facts_node)
     g.add_node("prediction", prediction_node)
-    g.add_node("other", other_node)
+    g.add_node("chat", chat_node)
     g.add_node("confidence", score_confidence)
     g.add_node("compose", compose_reply)
 
@@ -282,10 +293,10 @@ def _build_graph() -> StateGraph:
             "sentiment": "sentiment",
             "match_facts": "match_facts",
             "prediction": "prediction",
-            "other": "other",
+            "chat": "chat",
         },
     )
-    for node in ["news", "sentiment", "match_facts", "prediction", "other"]:
+    for node in ["news", "sentiment", "match_facts", "prediction", "chat"]:
         g.add_edge(node, "confidence")
     g.add_edge("confidence", "compose")
     g.add_edge("compose", END)
