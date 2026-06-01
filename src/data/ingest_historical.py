@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import httpx
 import pandas as pd
-from src.tools.bigquery_tools import upload_dataframe
+from src.tools.bigquery_tools import run_query, upload_dataframe
 
 _BASE = "https://v3.football.api-sports.io"
 _HEADERS = {
@@ -18,6 +18,18 @@ _HEADERS = {
 SEASONS = [2018, 2022,2026]
 WC_LEAGUE_ID = 1
 BQ_TABLE = "fixtures_historical"
+
+
+def _existing_fixture_ids() -> set[int]:
+    project = os.environ["BIGQUERY_PROJECT_ID"]
+    dataset = os.environ["BIGQUERY_DATASET_ID"]
+    try:
+        df = run_query(f"SELECT DISTINCT fixture_id FROM `{project}.{dataset}.{BQ_TABLE}`")
+    except Exception:
+        return set()
+    if df.empty:
+        return set()
+    return {int(fid) for fid in df["fixture_id"].dropna().tolist()}
 
 
 def _get(endpoint: str, params: dict) -> dict:
@@ -48,7 +60,13 @@ def ingest_season(season: int) -> int:
     fixtures = data.get("response", [])
     if not fixtures:
         return 0
+
+    existing = _existing_fixture_ids()
     rows = [_normalise_fixture(f, season) for f in fixtures]
+    rows = [r for r in rows if int(r["fixture_id"]) not in existing]
+    if not rows:
+        return 0
+
     df = pd.DataFrame(rows)
     upload_dataframe(df, BQ_TABLE)
     return len(rows)
