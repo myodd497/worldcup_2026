@@ -5,6 +5,7 @@ for a given match query.
 from __future__ import annotations
 
 import html
+import json
 import re
 
 import httpx
@@ -228,6 +229,108 @@ def _fallback_answer(query: str, reason: str) -> dict:
     }
 
 
+def _dedupe_fixtures(rows: list[dict]) -> list[dict]:
+    seen: set[tuple] = set()
+    unique: list[dict] = []
+    for row in rows:
+        key = (
+            row.get("fixture_id"),
+            str(row.get("date", ""))[:16],
+            str(row.get("home_team", "")).strip().lower(),
+            str(row.get("away_team", "")).strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _llm_format_fixtures_answer(
+    *,
+    query: str,
+    source: str,
+    fixtures: list[dict],
+    wants_list: bool,
+) -> str:
+    """Converts fixture rows into a user-friendly markdown response."""
+    compact_rows: list[dict] = []
+    for row in fixtures:
+        compact_rows.append(
+            {
+                "fixture_id": row.get("fixture_id"),
+                "date": str(row.get("date", "")),
+                "season": row.get("season"),
+                "status": row.get("status"),
+                "venue": row.get("venue"),
+                "venue_city": row.get("venue_city"),
+                "referee": row.get("referee"),
+                "home_team": row.get("home_team"),
+                "away_team": row.get("away_team"),
+                "home_goals": row.get("home_goals"),
+                "away_goals": row.get("away_goals"),
+            }
+        )
+
+    prompt = (
+        "You are a football assistant. Write a friendly, concise markdown answer from fixture data.\n"
+        "Rules:\n"
+        "- Start with a direct one-line answer to the user's question.\n"
+        "- Then provide details in either:\n"
+        "  1) a markdown table when there are 2 or more fixtures, or\n"
+        "  2) bullet points when there is only one fixture.\n"
+        "- Avoid repeating duplicate fixtures.\n"
+        "- Convert missing goals to 'TBD'.\n"
+        "- Mention the data source naturally (BigQuery cache or API).\n"
+        "- Keep it factual and do not invent data.\n"
+        "- Do not include confidence text or workflow/debug text.\n\n"
+        f"User question: {query}\n"
+        f"Data source: {source}\n"
+        f"List intent: {wants_list}\n"
+        "Fixture rows (JSON):\n"
+        f"{json.dumps(compact_rows, ensure_ascii=True)}"
+    )
+    return _llm.invoke(prompt).content.strip()
+
+
+def _template_fixtures_answer(query: str, source: str, fixtures: list[dict]) -> str:
+    """Fallback formatter when LLM formatting fails."""
+    if not fixtures:
+        return "I could not find matching fixtures."
+
+    source_label = "BigQuery cache" if source == "bigquery" else "live API"
+    lines = [f"Here is what I found for '{query}' from {source_label}:", ""]
+
+    if len(fixtures) == 1:
+        row = fixtures[0]
+        hg = row.get("home_goals")
+        ag = row.get("away_goals")
+        score = "TBD" if hg is None or ag is None else f"{hg}-{ag}"
+        lines.extend(
+            [
+                f"- Match: {row.get('home_team', 'Unknown')} vs {row.get('away_team', 'Unknown')}",
+                f"- Date: {str(row.get('date', ''))[:16] or 'TBD'}",
+                f"- Status: {row.get('status', 'TBD')}",
+                f"- Score: {score}",
+                f"- Venue: {row.get('venue', 'TBD')} ({row.get('venue_city', 'TBD')})",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append("| Date | Fixture | Status | Score |")
+    lines.append("|---|---|---|---|")
+    for row in fixtures:
+        hg = row.get("home_goals")
+        ag = row.get("away_goals")
+        score = "TBD" if hg is None or ag is None else f"{hg}-{ag}"
+        lines.append(
+            f"| {str(row.get('date', ''))[:16] or 'TBD'} | "
+            f"{row.get('home_team', 'Unknown')} vs {row.get('away_team', 'Unknown')} | "
+            f"{row.get('status', 'TBD')} | {score} |"
+        )
+    return "\n".join(lines)
+
+
 def run_structured(query: str) -> dict:
     fixtures, source = get_fixtures_cache_first(query=query, limit=5)
     if not fixtures:
@@ -236,56 +339,35 @@ def run_structured(query: str) -> dict:
             reason="No matching fixture in BigQuery cache and API returned no matching results.",
         )
 
+    fixtures = _dedupe_fixtures(fixtures)
+
     q = query.lower()
     wants_list = any(term in q for term in ("list", "matches", "results", "fixtures", "next", "upcoming", "schedule"))
 
-    if wants_list:
-        lines = ["*Matches found:*", f"📦 Source: {source}"]
-        for row in fixtures:
-            home = row.get("home_team", "Unknown")
-            away = row.get("away_team", "Unknown")
-            season = row.get("season", "?")
-            date = str(row.get("date", ""))[:10]
-            hg = row.get("home_goals")
-            ag = row.get("away_goals")
-            score = "TBD" if hg is None or ag is None else f"{hg}-{ag}"
-            lines.append(f"- {date} ({season}) | {home} vs {away} | {score}")
+    if not wants_list and fixtures:
+        match = fixtures[0]
+        weather = get_venue_weather(str(match.get("venue_city", "")))
+        match["weather_description"] = weather.get("description")
+        match["weather_temp_c"] = weather.get("temp_c")
 
-        confidence_score = 0.9 if source == "bigquery" else 0.7
-        confidence_reason = (
-            "Data served from BigQuery cache."
-            if source == "bigquery"
-            else "Data fetched from API and stored in BigQuery cache."
+    try:
+        answer = _llm_format_fixtures_answer(
+            query=query,
+            source=source,
+            fixtures=fixtures,
+            wants_list=wants_list,
         )
-        return {
-            "answer": "\n".join(lines),
-            "confidence_score": confidence_score,
-            "confidence_reason": confidence_reason,
-            "metadata": {"has_match": True, "data_source": source, "count": len(fixtures)},
-        }
+    except Exception:
+        answer = _template_fixtures_answer(query=query, source=source, fixtures=fixtures)
 
-    match = fixtures[0]
-    weather = get_venue_weather(str(match.get("venue_city", "")))
-
-    home = str(match.get("home_team", "Unknown"))
-    away = str(match.get("away_team", "Unknown"))
-    lines = [
-        f"*{home} vs {away}*",
-        f"📦 Source: {source}",
-        f"📅 {match.get('date', 'TBD')} | 🏟 {match.get('venue', 'TBD')}, {match.get('venue_city', 'TBD')}",
-        f"🌤 Weather: {weather['description']}, {weather['temp_c']:.0f}°C",
-        f"👨‍⚖️ Referee: {match.get('referee', 'TBD')}",
-        "",
-        f"*Result:* {match.get('home_goals', 'TBD')} - {match.get('away_goals', 'TBD')}",
-    ]
     score = 0.9 if source == "bigquery" else 0.7
     reason = "Data served from BigQuery cache." if source == "bigquery" else "Data fetched from API and stored in BigQuery cache."
 
     return {
-        "answer": "\n".join(lines),
+        "answer": answer,
         "confidence_score": score,
         "confidence_reason": reason,
-        "metadata": {"has_match": True, "data_source": source},
+        "metadata": {"has_match": True, "data_source": source, "count": len(fixtures)},
     }
 
 
