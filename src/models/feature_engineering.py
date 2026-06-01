@@ -9,8 +9,16 @@ from src.tools.bigquery_tools import run_query
 
 def load_fixtures_df() -> pd.DataFrame:
     sql = f"""
-        SELECT *
-        FROM `{__import__('os').environ['BIGQUERY_PROJECT_ID']}.{__import__('os').environ['BIGQUERY_DATASET_ID']}.fixtures_historical`
+        SELECT
+            fixture_id,
+            fixture_datetime,
+            season,
+            status,
+            home_team_id,
+            away_team_id,
+            home_goals,
+            away_goals
+        FROM `{__import__('os').environ['BIGQUERY_PROJECT_ID']}.{__import__('os').environ['BIGQUERY_DATASET_ID']}.fact_fixture`
     """
     return run_query(sql)
 
@@ -22,16 +30,16 @@ def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
       y = target (0=away win, 1=draw, 2=home win)
     """
     # Select completed matches only
-    completed = df[df["fixture.status.short"] == "FT"].copy()
+    completed = df[df["status"] == "FT"].copy()
 
-    home_goals = completed["goals.home"].fillna(0).astype(int)
-    away_goals = completed["goals.away"].fillna(0).astype(int)
+    home_goals = completed["home_goals"].fillna(0).astype(int)
+    away_goals = completed["away_goals"].fillna(0).astype(int)
 
     # Target variable
     def outcome(row):
-        if row["goals.home"] > row["goals.away"]:
+        if row["home_goals"] > row["away_goals"]:
             return 2  # home win
-        elif row["goals.home"] < row["goals.away"]:
+        elif row["home_goals"] < row["away_goals"]:
             return 0  # away win
         return 1  # draw
 
