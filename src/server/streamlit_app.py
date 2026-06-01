@@ -12,6 +12,7 @@ import os
 import streamlit as st
 
 from src.agents.orchestrator import run_orchestrator
+from src.data.startup_etl import run_full_etl_once
 
 
 def _hydrate_env_from_streamlit_secrets() -> None:
@@ -30,6 +31,16 @@ def _hydrate_env_from_streamlit_secrets() -> None:
 
 
 _hydrate_env_from_streamlit_secrets()
+
+
+@st.cache_resource(show_spinner=False)
+def _run_bootstrap_etl_once() -> dict[str, object]:
+    """Runs full ETL once per Streamlit server process startup."""
+    return run_full_etl_once(trigger="streamlit_startup")
+
+
+with st.spinner("Initializing data pipeline for app startup..."):
+    _run_bootstrap_etl_once()
 
 
 st.set_page_config(page_title="World Cup 2026 Chat", page_icon="⚽", layout="centered")
