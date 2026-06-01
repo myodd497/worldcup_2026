@@ -49,13 +49,22 @@ Reply with only the intent label, nothing else.
 
 def classify_intent(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
-    prompt = _INTENT_PROMPT.format(
-        intents=", ".join(_INTENTS),
-        message=state["user_message"],
-    )
-    intent = _llm.invoke(prompt).content.strip().lower()
-    if intent not in _INTENTS:
-        intent = "other"
+    query = state["user_message"].lower()
+    
+    # Pre-classify heuristic for list/games queries → match_facts
+    list_keywords = {"list", "games", "matches", "results", "fixtures", "upcoming", "next", "schedule"}
+    if any(kw in query for kw in list_keywords):
+        intent = "match_facts"
+    else:
+        # Fall back to LLM for other intents
+        prompt = _INTENT_PROMPT.format(
+            intents=", ".join(_INTENTS),
+            message=state["user_message"],
+        )
+        intent = _llm.invoke(prompt).content.strip().lower()
+        if intent not in _INTENTS:
+            intent = "other"
+    
     result = {**state, "intent": intent}
     tracker.log_step(
         "classify",
