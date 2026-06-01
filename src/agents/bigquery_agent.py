@@ -363,6 +363,7 @@ def _plan_sql(query: str) -> dict[str, Any]:
         "- If the user asks about fixtures, use fact_fixture or v_next_fixtures.\n"
         "- If the user asks for form, head-to-head, or prediction inputs, prefer the matching gold view.\n"
         "- If a query needs team/competition/venue/referee metadata, join the relevant dim tables.\n\n"
+        "- If the question is temporal or relative to today, use CURRENT_DATE('UTC') and date arithmetic instead of a hardcoded countdown branch.\n"
         f"Warehouse catalog:\n{catalog}\n\n"
         f"{live_metadata}\n\n"
         f"User request: {query}"
@@ -467,6 +468,21 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
         if table not in seen:
             seen.append(table)
     return seen
+
+
+def _render_countdown_answer(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "I could not calculate the countdown."
+
+    row = df.iloc[0]
+    days_left = row.get("days_until_start")
+    start_date = row.get("world_cup_start_date")
+    today_utc = row.get("today_utc")
+    return (
+        f"The FIFA Men's World Cup 2026 starts on {start_date}.\n"
+        f"Today (UTC): {today_utc}\n"
+        f"Days left: {int(days_left)}"
+    )
 
 
 def _render_answer(
