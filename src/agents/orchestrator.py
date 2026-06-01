@@ -134,39 +134,6 @@ def _build_contextual_user_message(state: OrchestratorState) -> str:
     )
 
 
-def _looks_like_bigquery_request(message: str, intent: str) -> bool:
-    q = message.lower()
-    if intent in {"match_facts", "prediction"}:
-        return True
-    keywords = (
-        "count",
-        "how many",
-        "average",
-        "avg",
-        "top",
-        "compare",
-        "comparison",
-        "trend",
-        "table",
-        "tables",
-        "schema",
-        "column",
-        "columns",
-        "list",
-        "show",
-        "available",
-        "what do we have",
-        "head to head",
-        "recent form",
-        "next game",
-        "next match",
-        "prediction features",
-        "standings",
-        "fixtures",
-    )
-    return any(keyword in q for keyword in keywords)
-
-
 # ── Nodes ────────────────────────────────────────────────────────────────────
 
 def classify_intent(state: OrchestratorState) -> OrchestratorState:
@@ -191,35 +158,19 @@ def classify_intent(state: OrchestratorState) -> OrchestratorState:
 
 
 def route_request(state: OrchestratorState) -> OrchestratorState:
-    """Planner node: selects one or more specialist agents."""
+    """Planner node: delegates to the planner agent for agent selection."""
     tracker = get_tracker()
 
-    fallback_mapping = {
-        "news": ["news", "match_facts"],
-        "sentiment": ["sentiment", "news"],
-        "match_facts": ["bigquery", "match_facts"],
-        "prediction": ["bigquery", "prediction", "match_facts"],
-        "chat": ["chat"],
-    }
+    from src.agents.planner_agent import plan_response
 
-    selected_agents = fallback_mapping.get(state["intent"], ["chat"])
-    if _looks_like_bigquery_request(state["user_message"], state["intent"]):
-        if "bigquery" not in selected_agents:
-            selected_agents = ["bigquery"] + selected_agents
-    try:
-        raw = _llm.invoke(
-            _AGENT_PLANNER_PROMPT.format(
-                context=_format_recent_history(state.get("messages", [])),
-                message=state["user_message"],
-            )
-        ).content.strip()
-        parsed = json.loads(raw)
-        candidates = parsed.get("agents", []) if isinstance(parsed, dict) else []
-        cleaned = [a for a in candidates if isinstance(a, str) and a in _AGENTS]
-        if cleaned:
-            selected_agents = cleaned[:3]
-    except Exception:
-        pass
+    plan = plan_response(
+        user_message=state["user_message"],
+        conversation_history=state.get("messages", []),
+    )
+
+    selected_agents = plan.get("agents", ["chat"])
+    cleaned = [a for a in selected_agents if isinstance(a, str) and a in _AGENTS]
+    selected_agents = cleaned[:3] or ["chat"]
 
     # Deduplicate while preserving order.
     deduped: list[str] = []
@@ -231,13 +182,16 @@ def route_request(state: OrchestratorState) -> OrchestratorState:
     result = {
         **state,
         "selected_agents": selected_agents,
-        "selected_agent": "multi" if len(selected_agents) > 1 else selected_agents[0],
+        "selected_agent": str(plan.get("primary_agent") or ("multi" if len(selected_agents) > 1 else selected_agents[0])),
     }
     tracker.log_step(
         "router",
         status="executed",
         input_data={"intent": state["intent"]},
-        output_data={"selected_agents": selected_agents},
+        output_data={
+            "selected_agents": selected_agents,
+            "planner_reason": str(plan.get("reason", ""))[:120],
+        },
     )
     return result
 
