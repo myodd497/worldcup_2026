@@ -5,12 +5,25 @@ for a given match query.
 from __future__ import annotations
 
 from src.tools.api_football import get_fixtures_cache_first
+from src.tools.news_search import search_news
 from src.tools.weather import get_venue_weather
 
 
 def run_structured(query: str) -> dict:
     fixtures, source = get_fixtures_cache_first(query=query, limit=5)
     if not fixtures:
+        web_hits = search_news(f"{query} football", max_results=3)
+        if web_hits:
+            lines = ["Could not find exact fixture data in BigQuery/API. I found relevant web sources:"]
+            for i, item in enumerate(web_hits, 1):
+                lines.append(f"{i}. [{item['title']}]({item['url']})")
+            return {
+                "answer": "\n".join(lines),
+                "confidence_score": 0.45,
+                "confidence_reason": "Tier-1/2 had no exact fixture match; fallback used web sources.",
+                "metadata": {"has_match": False, "data_source": "web_search", "count": len(web_hits)},
+            }
+
         return {
             "answer": f"Could not find match data for: {query}",
             "confidence_score": 0.3,
@@ -18,7 +31,8 @@ def run_structured(query: str) -> dict:
             "metadata": {"has_match": False, "data_source": "none"},
         }
 
-    wants_list = "list" in query.lower() or "matches" in query.lower() or "results" in query.lower()
+    q = query.lower()
+    wants_list = any(term in q for term in ("list", "matches", "results", "fixtures", "next", "upcoming", "schedule"))
 
     if wants_list:
         lines = ["*Matches found:*", f"📦 Source: {source}"]
