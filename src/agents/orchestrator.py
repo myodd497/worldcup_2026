@@ -48,6 +48,9 @@ Routing policy:
 - `news`: user asks for latest updates, headlines, rumours, transfers, injuries from media/web.
 - `chat`: generic conversation, ambiguous football talk, greetings, or any request that does not clearly fit above.
 
+Conversation context (earlier turns, if any):
+{context}
+
 User message: "{message}"
 
 Reply with only one label and nothing else.
@@ -59,8 +62,43 @@ You are a helpful football assistant.
 Keep the reply conversational and concise.
 If the user asks for data-heavy details (fixtures, results, standings, predictions), gently ask a short follow-up question.
 
+Conversation context (earlier turns, if any):
+{context}
+
 User message: "{message}"
 """.strip()
+
+
+def _format_recent_history(messages: list[dict[str, str]], max_messages: int = 8, max_chars: int = 400) -> str:
+    """Formats a bounded recent history window for prompts."""
+    if not messages:
+        return "None"
+
+    recent = messages[-max_messages:]
+    lines: list[str] = []
+    for msg in recent:
+        role = str(msg.get("role", "user")).strip().lower() or "user"
+        content = str(msg.get("content", "")).strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content[:max_chars]}")
+
+    return "\n".join(lines) if lines else "None"
+
+
+def _build_contextual_user_message(state: OrchestratorState) -> str:
+    """Adds recent conversation context to help specialist agents resolve references."""
+    context = _format_recent_history(state.get("messages", []), max_messages=6, max_chars=300)
+    if context == "None":
+        return state["user_message"]
+
+    return (
+        "Conversation context (earlier turns):\n"
+        f"{context}\n\n"
+        "Current user message:\n"
+        f"{state['user_message']}\n\n"
+        "Use the context to resolve references like 'that team' or 'the previous match'."
+    )
 
 
 # ── Nodes ────────────────────────────────────────────────────────────────────
@@ -69,6 +107,7 @@ def classify_intent(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
     prompt = _INTENT_PROMPT.format(
         intents=", ".join(_INTENTS),
+        context=_format_recent_history(state.get("messages", [])),
         message=state["user_message"],
     )
     intent = _llm.invoke(prompt).content.strip().lower()
@@ -113,7 +152,7 @@ def route_to_agent(state: OrchestratorState) -> str:
 def news_node(state: OrchestratorState) -> OrchestratorState:
     from src.agents.news_agent import run_structured as run_news
     tracker = get_tracker()
-    payload = run_news(state["user_message"])
+    payload = run_news(_build_contextual_user_message(state))
     result = {**state, "agent_payload": payload}
     tracker.log_step(
         "news_agent",
@@ -130,7 +169,7 @@ def news_node(state: OrchestratorState) -> OrchestratorState:
 def sentiment_node(state: OrchestratorState) -> OrchestratorState:
     from src.agents.sentiment_agent import run_structured as run_sentiment
     tracker = get_tracker()
-    payload = run_sentiment(state["user_message"])
+    payload = run_sentiment(_build_contextual_user_message(state))
     result = {**state, "agent_payload": payload}
     tracker.log_step(
         "sentiment_agent",
@@ -147,7 +186,7 @@ def sentiment_node(state: OrchestratorState) -> OrchestratorState:
 def match_facts_node(state: OrchestratorState) -> OrchestratorState:
     from src.agents.match_facts_agent import run_structured as run_facts
     tracker = get_tracker()
-    payload = run_facts(state["user_message"])
+    payload = run_facts(_build_contextual_user_message(state))
     result = {**state, "agent_payload": payload}
     tracker.log_step(
         "match_facts_agent",
@@ -164,7 +203,7 @@ def match_facts_node(state: OrchestratorState) -> OrchestratorState:
 def prediction_node(state: OrchestratorState) -> OrchestratorState:
     from src.agents.prediction_agent import run_structured as run_prediction
     tracker = get_tracker()
-    payload = run_prediction(state["user_message"])
+    payload = run_prediction(_build_contextual_user_message(state))
     result = {**state, "agent_payload": payload}
     tracker.log_step(
         "prediction_agent",
@@ -180,7 +219,12 @@ def prediction_node(state: OrchestratorState) -> OrchestratorState:
 
 def chat_node(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
-    answer = _llm.invoke(_CHAT_PROMPT.format(message=state["user_message"])).content.strip()
+    answer = _llm.invoke(
+        _CHAT_PROMPT.format(
+            message=state["user_message"],
+            context=_format_recent_history(state.get("messages", [])),
+        )
+    ).content.strip()
     result = {
         **state,
         "agent_payload": {
@@ -309,7 +353,11 @@ _graph = _build_graph()
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-async def run_orchestrator(user_message: str, user_id: str) -> str:
+async def run_orchestrator(
+    user_message: str,
+    user_id: str,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> str:
     from src.agents.workflow_logger import reset_tracker
     
     # Reset tracker for this new message
@@ -325,7 +373,7 @@ async def run_orchestrator(user_message: str, user_id: str) -> str:
         "confidence_label": "low",
         "confidence_reason": "",
         "final_reply": "",
-        "messages": [],
+        "messages": conversation_history or [],
     }
     result = _graph.invoke(initial_state)
     return result["final_reply"]
