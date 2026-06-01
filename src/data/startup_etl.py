@@ -10,16 +10,27 @@ import os
 import threading
 import time
 
-from src.data.build_semantic_model import run as run_semantic_model
-from src.data.ingest_enriched import run_enriched_ingestion
-from src.data.ingest_fixture_stats import run_fixture_stats_ingestion
-from src.data.ingest_historical import run_ingestion as run_historical_ingestion
-from src.data.ingest_team_history import run_team_history_ingestion
-
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 _HAS_RUN = False
+
+
+def _load_etl_runners() -> tuple:
+    """Lazily imports ETL modules to avoid import-time crashes in app bootstrap."""
+    from src.data.build_semantic_model import run as run_semantic_model
+    from src.data.ingest_enriched import run_enriched_ingestion
+    from src.data.ingest_fixture_stats import run_fixture_stats_ingestion
+    from src.data.ingest_historical import run_ingestion as run_historical_ingestion
+    from src.data.ingest_team_history import run_team_history_ingestion
+
+    return (
+        run_historical_ingestion,
+        run_enriched_ingestion,
+        run_team_history_ingestion,
+        run_fixture_stats_ingestion,
+        run_semantic_model,
+    )
 
 
 def _is_enabled() -> bool:
@@ -50,6 +61,14 @@ def run_full_etl_once(trigger: str, force: bool = False) -> dict[str, object]:
 
         start = time.time()
         logger.info("Starting full ETL pipeline (trigger=%s)", trigger)
+
+        (
+            run_historical_ingestion,
+            run_enriched_ingestion,
+            run_team_history_ingestion,
+            run_fixture_stats_ingestion,
+            run_semantic_model,
+        ) = _load_etl_runners()
 
         run_historical_ingestion()
         run_enriched_ingestion()
