@@ -139,25 +139,29 @@ for msg in st.session_state.messages:
 
 def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history: list[dict[str, str]] | None = None) -> str:
     """Executes async orchestrator from Streamlit sync context."""
-    try:
-        return asyncio.run(
-            run_orchestrator(
+    async def _invoke() -> str:
+        try:
+            return await run_orchestrator(
                 user_message=user_message,
                 user_id=user_id,
                 conversation_history=conversation_history,
             )
-        )
+        except TypeError as exc:
+            if "unexpected keyword argument 'conversation_history'" not in str(exc):
+                raise
+            # Backward compatibility for deployments with older orchestrator signature.
+            return await run_orchestrator(
+                user_message=user_message,
+                user_id=user_id,
+            )
+
+    try:
+        return asyncio.run(_invoke())
     except RuntimeError:
         # Fallback in case an event loop is already running in this process.
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(
-                run_orchestrator(
-                    user_message=user_message,
-                    user_id=user_id,
-                    conversation_history=conversation_history,
-                )
-            )
+            return loop.run_until_complete(_invoke())
         finally:
             loop.close()
 
