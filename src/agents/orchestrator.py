@@ -296,10 +296,6 @@ def compose_reply(state: OrchestratorState) -> OrchestratorState:
         confidence_reason=state["confidence_reason"],
     )
     
-    # Append workflow summary to the final reply (in debug/detail section)
-    workflow_summary = tracker.get_summary()
-    full_reply_with_workflow = f"{final_reply}\n\n{workflow_summary}"
-    
     log_session(state["user_id"], state["user_message"], final_reply)
     
     tracker.log_step(
@@ -309,7 +305,7 @@ def compose_reply(state: OrchestratorState) -> OrchestratorState:
         output_data={"final_reply": final_reply[:50]},
     )
     
-    return {**state, "final_reply": full_reply_with_workflow}
+    return {**state, "final_reply": final_reply}
 
 
 # ── Graph ────────────────────────────────────────────────────────────────────
