@@ -39,13 +39,23 @@ def _run_bootstrap_etl_once() -> dict[str, object]:
     return run_full_etl_once(trigger="streamlit_startup")
 
 
+_etl_bootstrap_error: str | None = None
 with st.spinner("Initializing data pipeline for app startup..."):
-    _run_bootstrap_etl_once()
+    try:
+        _run_bootstrap_etl_once()
+    except Exception as exc:
+        _etl_bootstrap_error = str(exc)
 
 
 st.set_page_config(page_title="World Cup 2026 Chat", page_icon="⚽", layout="centered")
 st.title("World Cup 2026 Chat")
 st.caption("Send a message like WhatsApp and get the same orchestrated reply.")
+
+if _etl_bootstrap_error:
+    st.warning(
+        "Startup ETL did not run successfully. The app will continue with existing data. "
+        f"Details: {_etl_bootstrap_error}"
+    )
 
 
 if "messages" not in st.session_state:
