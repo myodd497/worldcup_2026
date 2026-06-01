@@ -33,6 +33,7 @@ import pandas as pd
 from google.cloud import bigquery
 
 from src.tools.bigquery_tools import run_query, upload_dataframe_with_schema, _table_ref
+from src.tools.api_usage_tracker import record_api_call
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -52,6 +53,7 @@ def _get(endpoint: str, params: dict) -> dict:
     with httpx.Client(timeout=20) as client:
         resp = client.get(f"{_BASE}/{endpoint}", headers=_headers(), params=params)
         resp.raise_for_status()
+        record_api_call(endpoint=endpoint, response_headers=dict(resp.headers))
         return resp.json()
 
 
