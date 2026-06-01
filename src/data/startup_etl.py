@@ -18,11 +18,18 @@ _HAS_RUN = False
 
 def _load_etl_runners() -> tuple:
     """Lazily imports ETL modules to avoid import-time crashes in app bootstrap."""
-    from src.data.build_semantic_model import run as run_semantic_model
-    from src.data.ingest_enriched import run_enriched_ingestion
-    from src.data.ingest_fixture_stats import run_fixture_stats_ingestion
-    from src.data.ingest_historical import run_ingestion as run_historical_ingestion
-    from src.data.ingest_team_history import run_team_history_ingestion
+    try:
+        from src.data.build_semantic_model import run as run_semantic_model
+        from src.data.ingest_enriched import run_enriched_ingestion
+        from src.data.ingest_fixture_stats import run_fixture_stats_ingestion
+        from src.data.ingest_historical import run_ingestion as run_historical_ingestion
+        from src.data.ingest_team_history import run_team_history_ingestion
+    except Exception as exc:  # pragma: no cover - defensive for deploy/runtime env issues
+        raise RuntimeError(
+            "Unable to import ETL modules. Ensure runtime dependencies are installed "
+            "(notably google-cloud-bigquery and related packages) and that src is on PYTHONPATH. "
+            f"Underlying error: {exc}"
+        )
 
     return (
         run_historical_ingestion,
