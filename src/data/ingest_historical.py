@@ -8,6 +8,7 @@ import os
 import httpx
 import pandas as pd
 from src.tools.bigquery_tools import run_query, upload_dataframe
+from src.tools.api_usage_tracker import record_api_call
 
 _BASE = "https://v3.football.api-sports.io"
 _HEADERS = {
@@ -36,6 +37,7 @@ def _get(endpoint: str, params: dict) -> dict:
     with httpx.Client(timeout=15) as client:
         resp = client.get(f"{_BASE}/{endpoint}", headers=_HEADERS, params=params)
         resp.raise_for_status()
+        record_api_call(endpoint=endpoint, response_headers=dict(resp.headers))
         return resp.json()
 
 
