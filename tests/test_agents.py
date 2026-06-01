@@ -119,6 +119,37 @@ def test_bigquery_agent(mock_llm, mock_run_query):
     assert "BigQuery" in result["answer"]
 
 
+# ── Planner Agent ────────────────────────────────────────────────────────────
+
+@patch("src.agents.planner_agent._llm")
+def test_planner_agent_selects_bigquery(mock_llm):
+    mock_llm.invoke.return_value = MagicMock(
+        content=(
+            '{"agents": ["bigquery", "match_facts"], '
+            '"response_mode": "multi", '
+            '"reason": "Needs structured warehouse data", '
+            '"primary_agent": "bigquery"}'
+        )
+    )
+
+    from src.agents.planner_agent import plan_response
+
+    plan = plan_response("how many days until the world cup?", [])
+    assert plan["primary_agent"] == "bigquery"
+    assert "bigquery" in plan["agents"]
+
+
+@patch("src.agents.planner_agent._llm")
+def test_planner_agent_falls_back_to_bigquery_for_temporal_queries(mock_llm):
+    mock_llm.invoke.side_effect = Exception("planner unavailable")
+
+    from src.agents.planner_agent import plan_response
+
+    plan = plan_response("how many days until the world cup?", [])
+    assert "bigquery" in plan["agents"]
+    assert plan["primary_agent"] == "bigquery"
+
+
 # ── Docs Agent ───────────────────────────────────────────────────────────────
 
 def test_docs_agent(tmp_path):
