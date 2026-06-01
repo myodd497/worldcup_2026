@@ -33,7 +33,7 @@ def _safe(text: str) -> str:
 def _table_ref() -> str:
     project = os.environ["BIGQUERY_PROJECT_ID"]
     dataset = os.environ["BIGQUERY_DATASET_ID"]
-    return f"`{project}.{dataset}.fixtures_historical`"
+    return f"`{project}.{dataset}.fact_fixture`"
 
 
 def _parse_matchup(query: str) -> tuple[str, str] | None:
@@ -56,12 +56,16 @@ def _parse_matchup(query: str) -> tuple[str, str] | None:
 def _fetch_team_history(team: str, limit: int = 10) -> list[dict]:
     team_safe = _safe(team.lower())
     sql = f"""
-    SELECT date, home_team, away_team, home_goals, away_goals
+        SELECT CAST(fixture_datetime AS STRING) AS date,
+                     home_team_name AS home_team,
+                     away_team_name AS away_team,
+                     home_goals,
+                     away_goals
     FROM {_table_ref()}
-    WHERE (LOWER(home_team) LIKE '%{team_safe}%' OR LOWER(away_team) LIKE '%{team_safe}%')
+        WHERE (LOWER(home_team_name) LIKE '%{team_safe}%' OR LOWER(away_team_name) LIKE '%{team_safe}%')
       AND home_goals IS NOT NULL
       AND away_goals IS NOT NULL
-    ORDER BY date DESC
+        ORDER BY fixture_datetime DESC
     LIMIT {int(limit)}
     """
     df = run_query(sql)
@@ -74,16 +78,20 @@ def _fetch_h2h(home_team: str, away_team: str, limit: int = 10) -> list[dict]:
     home_safe = _safe(home_team.lower())
     away_safe = _safe(away_team.lower())
     sql = f"""
-    SELECT date, home_team, away_team, home_goals, away_goals
+        SELECT CAST(fixture_datetime AS STRING) AS date,
+                     home_team_name AS home_team,
+                     away_team_name AS away_team,
+                     home_goals,
+                     away_goals
     FROM {_table_ref()}
     WHERE (
-        (LOWER(home_team) LIKE '%{home_safe}%' AND LOWER(away_team) LIKE '%{away_safe}%')
+                (LOWER(home_team_name) LIKE '%{home_safe}%' AND LOWER(away_team_name) LIKE '%{away_safe}%')
         OR
-        (LOWER(home_team) LIKE '%{away_safe}%' AND LOWER(away_team) LIKE '%{home_safe}%')
+                (LOWER(home_team_name) LIKE '%{away_safe}%' AND LOWER(away_team_name) LIKE '%{home_safe}%')
     )
       AND home_goals IS NOT NULL
       AND away_goals IS NOT NULL
-    ORDER BY date DESC
+        ORDER BY fixture_datetime DESC
     LIMIT {int(limit)}
     """
     df = run_query(sql)
