@@ -28,17 +28,10 @@ jobs:
           poetry config virtualenvs.in-project true
           poetry install --no-interaction --no-ansi
 
-      - name: Configure environment
+      - name: Run full ETL
         env:
           BIGQUERY_PROJECT_ID: ${{ secrets.BIGQUERY_PROJECT_ID }}
           BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           GOOGLE_SERVICE_ACCOUNT_INFO: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_INFO }}
-        run: |
-          echo "BIGQUERY_PROJECT_ID=$BIGQUERY_PROJECT_ID" >> $GITHUB_ENV
-          echo "BIGQUERY_DATASET_ID=$BIGQUERY_DATASET_ID" >> $GITHUB_ENV
-          echo "API_FOOTBALL_KEY=$API_FOOTBALL_KEY" >> $GITHUB_ENV
-          echo "GOOGLE_SERVICE_ACCOUNT_INFO=$GOOGLE_SERVICE_ACCOUNT_INFO" >> $GITHUB_ENV
-
-      - name: Run full ETL
         run: poetry run python -m src.data.run_full_etl
