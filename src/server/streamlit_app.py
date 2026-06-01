@@ -13,6 +13,7 @@ import streamlit as st
 
 from src.agents.orchestrator import run_orchestrator
 from src.data.startup_etl import run_full_etl_once
+from src.tools.bigquery_tools import run_query
 
 
 def _hydrate_env_from_streamlit_secrets() -> None:
@@ -39,12 +40,55 @@ def _run_bootstrap_etl_once() -> dict[str, object]:
     return run_full_etl_once(trigger="streamlit_startup")
 
 
-_etl_bootstrap_error: str | None = None
-with st.spinner("Initializing data pipeline for app startup..."):
+def _startup_etl_enabled() -> bool:
+    value = os.getenv("RUN_FULL_ETL_ON_STARTUP", "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+@st.cache_data(ttl=60)
+def _get_last_etl_status() -> dict[str, str] | None:
+    """Returns latest ETL run metadata from BigQuery status table."""
+    project = os.environ.get("BIGQUERY_PROJECT_ID")
+    dataset = os.environ.get("BIGQUERY_DATASET_ID")
+    if not project or not dataset:
+        return None
+
+    sql = f"""
+    SELECT
+      trigger,
+      status,
+      CAST(started_at AS STRING) AS started_at,
+      CAST(finished_at AS STRING) AS finished_at,
+      CAST(duration_s AS STRING) AS duration_s,
+      error_message
+    FROM `{project}.{dataset}.etl_run_status`
+    ORDER BY started_at DESC
+    LIMIT 1
+    """
     try:
-        _run_bootstrap_etl_once()
-    except Exception as exc:
-        _etl_bootstrap_error = str(exc)
+        df = run_query(sql)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    row = df.iloc[0]
+    return {
+        "trigger": str(row.get("trigger", "")),
+        "status": str(row.get("status", "")),
+        "started_at": str(row.get("started_at", "")),
+        "finished_at": str(row.get("finished_at", "")),
+        "duration_s": str(row.get("duration_s", "")),
+        "error_message": str(row.get("error_message", "")),
+    }
+
+
+_etl_bootstrap_error: str | None = None
+if _startup_etl_enabled():
+    with st.spinner("Initializing data pipeline for app startup..."):
+        try:
+            _run_bootstrap_etl_once()
+        except Exception as exc:
+            _etl_bootstrap_error = str(exc)
 
 
 st.set_page_config(page_title="World Cup 2026 Chat", page_icon="⚽", layout="centered")
@@ -68,6 +112,21 @@ if "user_id" not in st.session_state:
 with st.sidebar:
     st.subheader("Session")
     st.session_state.user_id = st.text_input("User ID", value=st.session_state.user_id)
+
+    st.divider()
+    st.subheader("ETL Status")
+    last_etl = _get_last_etl_status()
+    if last_etl is None:
+        st.caption("No ETL status found yet.")
+    else:
+        st.caption(f"Last run at: {last_etl['started_at']}")
+        st.caption(f"Status: {last_etl['status']}")
+        st.caption(f"Trigger: {last_etl['trigger']}")
+        if last_etl["duration_s"] and last_etl["duration_s"] != "nan":
+            st.caption(f"Duration: {last_etl['duration_s']}s")
+        if last_etl["status"].startswith("FAILED") and last_etl["error_message"]:
+            st.caption(f"Error: {last_etl['error_message'][:160]}")
+
     if st.button("Clear Chat"):
         st.session_state.messages = []
         st.rerun()
