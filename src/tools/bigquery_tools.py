@@ -28,6 +28,11 @@ def _validate_private_key(private_key: str, private_key_id: str) -> str:
     if "BEGIN PRIVATE KEY" not in key or "END PRIVATE KEY" not in key:
         raise ValueError("Invalid service account private_key format.")
 
+    # Heuristic guardrail for accidentally truncated PEM content.
+    pem_lines = [ln for ln in key.splitlines() if ln.strip()]
+    if len(pem_lines) < 8:
+        raise ValueError("Service account private_key appears truncated (too few PEM lines).")
+
     return key
 
 
@@ -49,9 +54,10 @@ def _client() -> bigquery.Client:
             credentials = service_account.Credentials.from_service_account_info(info)
             return bigquery.Client(project=project_id, credentials=credentials)
         except Exception as exc:  # pragma: no cover - defensive for runtime secrets issues
-            logger.warning(
-                "Invalid GOOGLE_SERVICE_ACCOUNT_INFO, falling back to default credentials: %s",
-                exc,
+            raise RuntimeError(
+                "Invalid GOOGLE_SERVICE_ACCOUNT_INFO. "
+                "Please fix Streamlit secrets [gcp_service_account] with a complete valid service account key. "
+                f"Underlying error: {exc}"
             )
 
     # Local mode: use GOOGLE_APPLICATION_CREDENTIALS file if configured.
@@ -104,6 +110,13 @@ def run_query(sql: str) -> pd.DataFrame:
     """Runs a SQL query and returns the result as a DataFrame."""
     client = _client()
     return client.query(sql).to_dataframe()
+
+
+def execute_sql(sql: str) -> None:
+    """Executes SQL (DDL/DML) and waits for completion."""
+    client = _client()
+    job = client.query(sql)
+    job.result()
 
 
 if __name__ == "__main__":
