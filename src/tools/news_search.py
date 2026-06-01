@@ -8,7 +8,10 @@ from typing import Any
 
 
 def _is_news_enabled() -> bool:
-    return os.getenv("ENABLE_NEWS", "false").lower() == "true"
+    flag = os.getenv("ENABLE_NEWS", "false").lower() == "true"
+    has_tavily = bool(os.getenv("TAVILY_API_KEY"))
+    has_newsapi = bool(os.getenv("NEWSAPI_KEY"))
+    return flag or has_tavily or has_newsapi
 
 
 def search_news(query: str, max_results: int = 5) -> list[dict[str, Any]]:
