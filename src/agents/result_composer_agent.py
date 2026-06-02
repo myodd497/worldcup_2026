@@ -55,15 +55,20 @@ def compose(
     confidence_reason: str,
 ) -> str:
     raw_answer = str(payload.get("answer", "I could not build a response for that request."))
-    try:
-        answer = _format_final_answer(
-            user_message=user_message,
-            intent=intent,
-            selected_agent=selected_agent,
-            raw_answer=raw_answer,
-        )
-    except Exception:
+    data_source = str((payload.get("metadata", {}) or {}).get("data_source", "unknown"))
+
+    if selected_agent == "bigquery" or data_source == "bigquery":
         answer = raw_answer
+    else:
+        try:
+            answer = _format_final_answer(
+                user_message=user_message,
+                intent=intent,
+                selected_agent=selected_agent,
+                raw_answer=raw_answer,
+            )
+        except Exception:
+            answer = raw_answer
 
     sections = [answer, "", _confidence_line(confidence_score, confidence_label)]
 
