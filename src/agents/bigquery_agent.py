@@ -1,14 +1,22 @@
-"""BigQuery Agent — plans and runs SQL over the warehouse using schema-aware metadata.
+"""BigQuery Agent — multi-step planning over the World Cup warehouse.
 
-The agent prefers canonical `fact_` / `dim_` tables and `v_` gold views, while
-keeping source-only tables available for explicit warehouse-introspection tasks.
-It returns structured output that is later polished by the shared final composer.
+Pipeline:
+1. Load schema metadata (columns + descriptions) for `fact_*`, `dim_*`, `v_*`.
+2. Load business contract (app_allowed objects + business_concept) from
+   `v_data_contract_tables` with a static fallback.
+3. Extract entities from the user question (team names, season, fixture intent).
+4. Resolve team names -> team_id via `dim_team`.
+5. Plan which tables to use (LLM-guided, restricted to app_allowed prefixes).
+6. Generate one or more SQL queries with full schema + resolved IDs in context.
+7. Execute queries, repair invalid SQL once using BigQuery error feedback.
+8. Compose a final answer that merges all query results.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +27,16 @@ from src.tools.bigquery_tools import run_query
 
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+_ALLOWED_PREFIXES = ("fact_", "dim_", "v_")
+_SCHEMA_CACHE_TTL_SECONDS = 600
+_MAX_QUERIES = 4
+_FALLBACK_DATASET = "worldcup2026"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Static catalog (used as fallback if v_data_contract_tables is unreachable)
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -33,245 +51,90 @@ class WarehouseObject:
 
 
 WAREHOUSE_OBJECTS: tuple[WarehouseObject, ...] = (
-    WarehouseObject(
-        name="fixtures_historical",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw fixture snapshot",
-        description="Historical fixture rows ingested from API-Football.",
-        key_columns=("fixture_id", "season", "date", "home_team", "away_team"),
-        notes="Source-only; app features should not query this directly.",
-    ),
-    WarehouseObject(
-        name="team_match_history",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw team-match history",
-        description="Team-centric historical matches across competitions.",
-        key_columns=("team_id", "fixture_id", "match_date", "result"),
-        notes="Source-only; canonical team fixture facts are built from it.",
-    ),
-    WarehouseObject(
-        name="fixture_events",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw fixture events",
-        description="Goals, cards, substitutions, and VAR events.",
-        key_columns=("fixture_id", "team_id", "event_type", "event_detail"),
-        notes="Source-only; use canonical event facts for app queries.",
-    ),
-    WarehouseObject(
-        name="fixture_stats",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw fixture team stats",
-        description="Long-format team statistics for each fixture.",
-        key_columns=("fixture_id", "team_id", "stat_type"),
-        notes="Source-only; use fact_fixture_team_stat for app queries.",
-    ),
-    WarehouseObject(
-        name="standings",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw standings",
-        description="Group standings snapshots.",
-        key_columns=("season", "team_id", "group_name"),
-        notes="Source-only; use canonical tables/views in app logic.",
-    ),
-    WarehouseObject(
-        name="team_stats",
-        kind="source table",
-        usage="source_only",
-        business_concept="raw team season stats",
-        description="Season-level team aggregates from API-Football.",
-        key_columns=("team_id", "season"),
-        notes="Source-only; use canonical tables/views in app logic.",
-    ),
-    WarehouseObject(
-        name="fact_fixture",
-        kind="canonical table",
-        usage="app_allowed",
-        business_concept="fixture",
-        description="One row per fixture with competition, venue, referee, and score columns.",
-        key_columns=("fixture_id",),
-    ),
-    WarehouseObject(
-        name="fact_team_fixture",
-        kind="canonical table",
-        usage="app_allowed",
-        business_concept="team fixture participation",
-        description="One row per team and fixture pair for team-centric history questions.",
-        key_columns=("team_id", "fixture_id"),
-    ),
-    WarehouseObject(
-        name="fact_fixture_event",
-        kind="canonical table",
-        usage="app_allowed",
-        business_concept="fixture event",
-        description="Canonical fixture-event timeline.",
-        key_columns=("event_key",),
-    ),
-    WarehouseObject(
-        name="fact_fixture_team_stat",
-        kind="canonical table",
-        usage="app_allowed",
-        business_concept="fixture team statistic",
-        description="One row per fixture, team, and stat type.",
-        key_columns=("fixture_id", "team_id", "stat_type"),
-    ),
-    WarehouseObject(
-        name="dim_team",
-        kind="canonical dimension",
-        usage="app_allowed",
-        business_concept="team",
-        description="Master team dimension.",
-        key_columns=("team_id",),
-    ),
-    WarehouseObject(
-        name="dim_competition",
-        kind="canonical dimension",
-        usage="app_allowed",
-        business_concept="competition",
-        description="Master competition dimension.",
-        key_columns=("competition_id",),
-    ),
-    WarehouseObject(
-        name="dim_venue",
-        kind="canonical dimension",
-        usage="app_allowed",
-        business_concept="venue",
-        description="Master venue dimension.",
-        key_columns=("venue_id",),
-    ),
-    WarehouseObject(
-        name="dim_referee",
-        kind="canonical dimension",
-        usage="app_allowed",
-        business_concept="referee",
-        description="Master referee dimension.",
-        key_columns=("referee_id",),
-    ),
-    WarehouseObject(
-        name="v_team_recent_form",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="team recent form",
-        description="Recent form summary by team.",
-        key_columns=("team_id",),
-    ),
-    WarehouseObject(
-        name="v_head_to_head",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="head to head summary",
-        description="Head-to-head aggregates by team pair.",
-        key_columns=("team_a_id", "team_b_id"),
-    ),
-    WarehouseObject(
-        name="v_next_fixtures",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="upcoming fixture list",
-        description="Upcoming fixtures ordered by kickoff time.",
-        key_columns=("fixture_id",),
-    ),
-    WarehouseObject(
-        name="v_match_card",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="match card",
-        description="Composite match card with form and standings context.",
-        key_columns=("fixture_id",),
-    ),
-    WarehouseObject(
-        name="v_prediction_features",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="prediction feature set",
-        description="Feature view for prediction use cases.",
-        key_columns=("fixture_id",),
-    ),
-    WarehouseObject(
-        name="v_dq_uniqueness_checks",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="uniqueness quality checks",
-        description="Data quality summary for uniqueness constraints.",
-        key_columns=("table_name",),
-    ),
-    WarehouseObject(
-        name="v_data_contract_tables",
-        kind="gold view",
-        usage="app_allowed",
-        business_concept="table usage contract",
-        description="Inventory of source-only, canonical, and gold objects.",
-        key_columns=("object_name",),
-    ),
-    WarehouseObject(
-        name="etl_run_status",
-        kind="ops table",
-        usage="app_allowed",
-        business_concept="ETL run status",
-        description="Operational log of ETL runs, status, duration, and errors.",
-        key_columns=("run_id", "started_at"),
-    ),
+    WarehouseObject("fact_fixture", "canonical table", "app_allowed", "fixture",
+                    "One row per fixture with home/away team IDs, score, venue, referee.",
+                    ("fixture_id",)),
+    WarehouseObject("fact_team_fixture", "canonical table", "app_allowed", "team fixture participation",
+                    "Team-centric match history with result, goals_scored, goals_conceded, was_home, opponent_id.",
+                    ("team_id", "fixture_id")),
+    WarehouseObject("fact_fixture_event", "canonical table", "app_allowed", "fixture event",
+                    "Match events: goals, cards, substitutions, VAR with player/team and minute.",
+                    ("event_key",)),
+    WarehouseObject("fact_fixture_team_stat", "canonical table", "app_allowed", "fixture team statistic",
+                    "Per-team match stats: possession, shots, fouls (long format).",
+                    ("fixture_id", "team_id", "stat_type")),
+    WarehouseObject("dim_team", "canonical dimension", "app_allowed", "team",
+                    "Team master. Resolve human team names to team_id here.",
+                    ("team_id",)),
+    WarehouseObject("dim_competition", "canonical dimension", "app_allowed", "competition",
+                    "Competition master.", ("competition_id",)),
+    WarehouseObject("dim_venue", "canonical dimension", "app_allowed", "venue",
+                    "Venue master.", ("venue_id",)),
+    WarehouseObject("dim_referee", "canonical dimension", "app_allowed", "referee",
+                    "Referee master.", ("referee_id",)),
+    WarehouseObject("v_team_recent_form", "gold view", "app_allowed", "team recent form",
+                    "Pre-aggregated last-5 form (W/D/L, goals).", ("team_id",)),
+    WarehouseObject("v_head_to_head", "gold view", "app_allowed", "head to head summary",
+                    "Pairwise h2h summary; team_a_id = LEAST, team_b_id = GREATEST.",
+                    ("team_a_id", "team_b_id")),
+    WarehouseObject("v_next_fixtures", "gold view", "app_allowed", "upcoming fixture list",
+                    "Upcoming fixtures filtered for unplayed status.", ("fixture_id",)),
+    WarehouseObject("v_match_card", "gold view", "app_allowed", "match card",
+                    "Match composite with form + standings context.", ("fixture_id",)),
+    WarehouseObject("v_prediction_features", "gold view", "app_allowed", "prediction feature set",
+                    "Last-10 PPM and goal-diff per match features.", ("fixture_id",)),
+    WarehouseObject("v_data_contract_tables", "gold view", "app_allowed", "table usage contract",
+                    "Inventory of warehouse objects and their app_usage.", ("object_name",)),
 )
 
-APP_ALLOWED_OBJECTS = {
-    obj.name for obj in WAREHOUSE_OBJECTS if obj.usage == "app_allowed"
-}
-
-ANALYTICAL_KEYWORDS = {
-    "count",
-    "how many",
-    "average",
-    "avg",
-    "sum",
-    "top",
-    "rank",
-    "compare",
-    "comparison",
-    "trend",
-    "list",
-    "show",
-    "table",
-    "tables",
-    "schema",
-    "column",
-    "columns",
-    "rows",
-    "most",
-    "least",
-    "unique",
-    "distinct",
-    "next fixtures",
-    "recent form",
-    "head to head",
-    "prediction features",
-}
+APP_ALLOWED_OBJECTS = {obj.name for obj in WAREHOUSE_OBJECTS if obj.usage == "app_allowed"}
 
 
-def _catalog_summary() -> str:
-    lines: list[str] = []
-    for obj in WAREHOUSE_OBJECTS:
-        key_cols = ", ".join(obj.key_columns) if obj.key_columns else "n/a"
-        lines.append(
-            f"- {obj.name} | {obj.kind} | {obj.usage} | {obj.business_concept} | keys: {key_cols}"
-        )
-        lines.append(f"  - {obj.description}")
-        if obj.notes:
-            lines.append(f"  - {obj.notes}")
-    return "\n".join(lines)
+# ─────────────────────────────────────────────────────────────────────────────
+# Environment helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-def _runtime_column_metadata() -> str:
-    dataset = os.environ.get("BIGQUERY_DATASET_ID", "").strip()
-    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
-    if not dataset or not project:
-        return ""
+def _project() -> str:
+    return os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
 
-    object_names = sorted(APP_ALLOWED_OBJECTS)
-    quoted = ", ".join([f"'{name}'" for name in object_names])
+
+def _dataset() -> str:
+    return os.environ.get("BIGQUERY_DATASET_ID", _FALLBACK_DATASET).strip() or _FALLBACK_DATASET
+
+
+def _fq(table: str) -> str:
+    return f"`{_project()}.{_dataset()}.{table}`"
+
+
+def _is_allowed_table(name: str) -> bool:
+    return any(name.startswith(prefix) for prefix in _ALLOWED_PREFIXES)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema metadata loader (cached)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_schema_cache: dict[str, Any] = {"loaded_at": 0.0, "data": {}}
+
+
+def _load_column_metadata() -> dict[str, list[dict[str, str]]]:
+    """{table_name: [{column_name, data_type, is_nullable, description}, ...]}.
+
+    Restricted to app_allowed fact/dim/v objects. Cached for TTL seconds.
+    """
+    now = time.time()
+    if _schema_cache["data"] and (now - _schema_cache["loaded_at"]) < _SCHEMA_CACHE_TTL_SECONDS:
+        return _schema_cache["data"]
+
+    project = _project()
+    dataset = _dataset()
+    if not project:
+        return {}
+
+    allowed = [name for name in sorted(APP_ALLOWED_OBJECTS) if _is_allowed_table(name)]
+    quoted = ", ".join(f"'{name}'" for name in allowed)
     sql = f"""
     SELECT table_name, column_name, data_type, is_nullable, IFNULL(description, '') AS description
     FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS`
@@ -281,75 +144,104 @@ def _runtime_column_metadata() -> str:
     try:
         df = run_query(sql)
     except Exception:
-        return ""
+        return _schema_cache["data"]
 
-    if df.empty:
-        return ""
-
-    grouped: dict[str, list[str]] = {}
+    grouped: dict[str, list[dict[str, str]]] = {}
     for row in df.itertuples(index=False):
-        desc = str(getattr(row, "description", "") or "").strip()
-        nullability = "nullable" if str(getattr(row, "is_nullable", "YES")).upper() == "YES" else "required"
-        col_text = f"{row.column_name}:{row.data_type} ({nullability})"
-        if desc:
-            col_text += f" - {desc}"
-        grouped.setdefault(str(row.table_name), []).append(col_text)
+        grouped.setdefault(str(row.table_name), []).append({
+            "column_name": str(row.column_name),
+            "data_type": str(row.data_type),
+            "is_nullable": str(row.is_nullable),
+            "description": str(getattr(row, "description", "") or "").strip(),
+        })
 
-    lines: list[str] = ["Live column metadata from BigQuery:"]
-    for table_name in sorted(grouped):
-        lines.append(f"- {table_name}: {', '.join(grouped[table_name])}")
-    return "\n".join(lines)
-
-
-def _keyword_seed(query: str) -> str:
-    q = query.lower()
-    if any(term in q for term in ("what tables", "available tables", "table list", "schema")):
-        return "catalog"
-    if any(term in q for term in ("next game", "upcoming", "next match", "today", "fixture")):
-        return "fixtures"
-    if any(term in q for term in ("head to head", "vs", "versus")):
-        return "h2h"
-    if any(term in q for term in ("recent form", "form")):
-        return "form"
-    if any(term in q for term in ("prediction", "probability", "win", "draw", "loss")):
-        return "prediction"
-    if any(term in q for term in ("venue", "referee")):
-        return "match_card"
-    if any(term in q for term in ANALYTICAL_KEYWORDS):
-        return "analytics"
-    return "generic"
+    _schema_cache["data"] = grouped
+    _schema_cache["loaded_at"] = now
+    return grouped
 
 
-def _heuristic_sql(query: str) -> str:
-    seed = _keyword_seed(query)
-    dataset = os.environ["BIGQUERY_DATASET_ID"]
-    project = os.environ["BIGQUERY_PROJECT_ID"]
+def _format_schema(tables: list[str]) -> str:
+    schema = _load_column_metadata()
+    if not schema:
+        return "(no live schema metadata available)"
 
-    if seed == "catalog":
-        return f"SELECT * FROM `{project}.{dataset}.v_data_contract_tables` ORDER BY object_layer, object_name"
-    if seed == "fixtures":
-        return f"SELECT * FROM `{project}.{dataset}.v_next_fixtures` ORDER BY fixture_datetime ASC LIMIT 10"
-    if seed == "h2h":
-        return f"SELECT * FROM `{project}.{dataset}.v_head_to_head` ORDER BY last_meeting_datetime DESC LIMIT 10"
-    if seed == "form":
-        return f"SELECT * FROM `{project}.{dataset}.v_team_recent_form` ORDER BY matches_used DESC LIMIT 20"
-    if seed == "prediction":
-        return f"SELECT * FROM `{project}.{dataset}.v_prediction_features` ORDER BY fixture_datetime ASC LIMIT 10"
-    if seed == "match_card":
-        return f"SELECT * FROM `{project}.{dataset}.v_match_card` ORDER BY fixture_datetime ASC LIMIT 10"
-
-    return f"""
-    SELECT *
-    FROM `{project}.{dataset}.fact_fixture`
-    ORDER BY fixture_datetime DESC
-    LIMIT 10
-    """.strip()
+    lines: list[str] = []
+    for table in tables:
+        cols = schema.get(table, [])
+        if not cols:
+            continue
+        lines.append(f"- {table}:")
+        for col in cols:
+            desc = f" — {col['description']}" if col["description"] else ""
+            null = "NULL" if col["is_nullable"].upper() == "YES" else "NOT NULL"
+            lines.append(f"    • {col['column_name']} {col['data_type']} {null}{desc}")
+    return "\n".join(lines) if lines else "(no schema rows)"
 
 
-def _parse_planner_output(raw: str) -> dict[str, Any]:
+# ─────────────────────────────────────────────────────────────────────────────
+# Business contract loader (with static fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _load_contract() -> list[dict[str, str]]:
+    """Returns list of {object_name, object_layer, app_usage, business_concept}.
+
+    Filtered to app_allowed fact/dim/v objects only.
+    """
+    project = _project()
+    dataset = _dataset()
+    if project:
+        sql = f"""
+        SELECT object_name, object_layer, app_usage, business_concept
+        FROM `{project}.{dataset}.v_data_contract_tables`
+        WHERE app_usage = 'app_allowed'
+        """
+        try:
+            df = run_query(sql)
+            rows = [
+                {
+                    "object_name": str(r.object_name),
+                    "object_layer": str(r.object_layer),
+                    "app_usage": str(r.app_usage),
+                    "business_concept": str(r.business_concept),
+                }
+                for r in df.itertuples(index=False)
+                if _is_allowed_table(str(r.object_name))
+            ]
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+    # Fallback to static catalog
+    return [
+        {
+            "object_name": obj.name,
+            "object_layer": obj.kind,
+            "app_usage": obj.usage,
+            "business_concept": obj.business_concept,
+        }
+        for obj in WAREHOUSE_OBJECTS
+        if obj.usage == "app_allowed" and _is_allowed_table(obj.name)
+    ]
+
+
+def _format_contract(contract: list[dict[str, str]]) -> str:
+    return "\n".join(
+        f"- {row['object_name']} [{row['object_layer']}] — {row['business_concept']}"
+        for row in contract
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Robust JSON parsing helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_json(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     if not text:
-        raise ValueError("Planner returned empty output")
+        raise ValueError("Empty LLM output")
 
     try:
         parsed = json.loads(text)
@@ -358,8 +250,7 @@ def _parse_planner_output(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Common LLM format: fenced JSON block.
-    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
     if fenced:
         try:
             parsed = json.loads(fenced.group(1))
@@ -368,318 +259,435 @@ def _parse_planner_output(raw: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Best-effort extraction: take the outermost JSON object substring.
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start : end + 1]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(text[start : end + 1])
             if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
             pass
 
     preview = text.replace("\n", " ")[:240]
-    raise ValueError(f"Planner output was not valid JSON: {preview}")
+    raise ValueError(f"Could not parse JSON: {preview}")
 
 
-def _plan_sql(query: str) -> dict[str, Any]:
-    catalog = _catalog_summary()
-    live_metadata = _runtime_column_metadata()
-    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
-    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
-    fq_prefix = f"{project}.{dataset}" if project else f"<project>.{dataset}"
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1: Entity extraction
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_entities(query: str) -> dict[str, Any]:
+    """Identify teams, season, and intent flags from the user question."""
+    prompt = (
+        "Extract structured entities from a football question for a World Cup 2026 assistant.\n"
+        "Return JSON only with these keys:\n"
+        "- teams: list of full team names mentioned (e.g., [\"Portugal\", \"Morocco\"])\n"
+        "- season: integer year if mentioned, else null\n"
+        "- is_head_to_head: true if the question compares two specific teams\n"
+        "- is_specific_match: true if it asks about one specific fixture (last result, lineup, stats of a match)\n"
+        "- needs_recent_form: true if it asks about form, streak, last matches\n"
+        "- needs_upcoming: true if it asks about next/upcoming fixtures\n"
+        "- needs_match_stats: true if it asks about possession, shots, fouls or other match statistics\n"
+        "- needs_events: true if it asks about goals, cards, substitutions, scorers\n\n"
+        f"Question: {query}\n\n"
+        "JSON only."
+    )
+    try:
+        parsed = _parse_json(_llm.invoke(prompt).content)
+    except Exception:
+        parsed = {}
+
+    return {
+        "teams": [str(t).strip() for t in parsed.get("teams", []) if str(t).strip()],
+        "season": parsed.get("season"),
+        "is_head_to_head": bool(parsed.get("is_head_to_head", False)),
+        "is_specific_match": bool(parsed.get("is_specific_match", False)),
+        "needs_recent_form": bool(parsed.get("needs_recent_form", False)),
+        "needs_upcoming": bool(parsed.get("needs_upcoming", False)),
+        "needs_match_stats": bool(parsed.get("needs_match_stats", False)),
+        "needs_events": bool(parsed.get("needs_events", False)),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2: Team resolution via dim_team
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_team_ids(team_names: list[str]) -> dict[str, int]:
+    """Maps each input team name to its team_id via dim_team (fuzzy LIKE match)."""
+    if not team_names or not _project():
+        return {}
+
+    safe_names = [name.replace("'", "''") for name in team_names]
+    clauses = " OR ".join(
+        f"LOWER(team_name) LIKE '%{name.lower()}%'" for name in safe_names
+    )
+    sql = f"""
+    SELECT team_id, team_name
+    FROM {_fq('dim_team')}
+    WHERE {clauses}
+    """
+    try:
+        df = run_query(sql)
+    except Exception:
+        return {}
+
+    resolved: dict[str, int] = {}
+    for original in team_names:
+        needle = original.lower()
+        match = df[df["team_name"].str.lower().str.contains(needle, na=False, regex=False)]
+        if not match.empty:
+            resolved[original] = int(match.iloc[0]["team_id"])
+    return resolved
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3: Table selection
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _heuristic_table_selection(entities: dict[str, Any]) -> list[str]:
+    tables: list[str] = []
+    if entities.get("needs_upcoming"):
+        tables.append("v_next_fixtures")
+    if entities.get("needs_recent_form"):
+        tables.append("v_team_recent_form")
+    if entities.get("is_head_to_head"):
+        tables.append("v_head_to_head")
+    if entities.get("is_specific_match"):
+        tables.append("fact_fixture")
+    if entities.get("needs_match_stats"):
+        tables.append("fact_fixture_team_stat")
+    if entities.get("needs_events"):
+        tables.append("fact_fixture_event")
+    if not tables:
+        tables.append("fact_fixture")
+    return tables
+
+
+def _select_tables(query: str, entities: dict[str, Any], contract: list[dict[str, str]]) -> list[str]:
+    """LLM-guided table selection, restricted to app_allowed fact/dim/v objects."""
+    catalog_text = _format_contract(contract)
+    valid_names = {row["object_name"] for row in contract}
 
     prompt = (
-        "You are a BigQuery analyst for a World Cup football assistant.\n"
-        "Translate the user request into a single safe BigQuery SELECT query.\n"
+        "You are selecting BigQuery tables to answer a football question.\n"
+        "Pick the smallest set of objects that together answer the question.\n"
         "Rules:\n"
-        f"- Always reference tables/views as fully qualified names in backticks using this exact prefix: `{fq_prefix}.object`.\n"
-        "- Never use placeholders like project.dataset, project:dataset, or <project>.\n"
-        "- Use only the warehouse objects listed below.\n"
-        "- Prefer app_allowed canonical tables and gold views.\n"
-        "- Use source-only tables only if the user explicitly asks about raw ingestion or warehouse inventory.\n"
-        "- Return JSON only with keys: sql, tables_used, explanation, answer_style.\n"
-        "- Use one query statement only. No DDL/DML. No comments.\n"
-        "- If the user asks for available tables or schema, query v_data_contract_tables or INFORMATION_SCHEMA.\n"
-        "- If the user asks about fixtures, use fact_fixture or v_next_fixtures.\n"
-        "- If the user asks for form, head-to-head, or prediction inputs, prefer the matching gold view.\n"
-        "- If a query needs team/competition/venue/referee metadata, join the relevant dim tables.\n\n"
-        "- If the question is temporal or relative to today, use CURRENT_DATE('UTC') and date arithmetic instead of a hardcoded countdown branch.\n"
-        f"Warehouse catalog:\n{catalog}\n\n"
-        f"{live_metadata}\n\n"
-        f"User request: {query}"
+        "- Choose only from the catalog below.\n"
+        "- Prefer gold views (v_*) when they pre-aggregate the needed concept.\n"
+        "- Include dim_team only if you need team names beyond what facts already denormalize.\n"
+        "- Return JSON only: {\"tables\": [\"...\", \"...\"], \"reason\": \"...\"}\n\n"
+        f"Catalog (app_allowed only):\n{catalog_text}\n\n"
+        f"Question: {query}\n"
+        f"Entities: {json.dumps(entities)}"
     )
-    raw = _llm.invoke(prompt).content.strip()
     try:
-        return _parse_planner_output(raw)
-    except ValueError:
-        # One repair pass to coerce accidental prose/markdown into strict JSON.
-        repair_prompt = (
-            "Convert the following planner output into a strict JSON object only.\n"
-            "Required keys: sql, tables_used, explanation, answer_style.\n"
-            "Return JSON only, no markdown fences, no prose.\n\n"
-            f"Planner output:\n{raw}"
-        )
-        repaired = _llm.invoke(repair_prompt).content.strip()
-        return _parse_planner_output(repaired)
+        parsed = _parse_json(_llm.invoke(prompt).content)
+        raw_tables = [str(t).strip() for t in parsed.get("tables", []) if str(t).strip()]
+    except Exception:
+        raw_tables = []
+
+    selected = [t for t in raw_tables if t in valid_names and _is_allowed_table(t)]
+    if not selected:
+        selected = _heuristic_table_selection(entities)
+    return selected
 
 
-def _repair_sql_plan(
-    *,
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4: SQL generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _generate_sql_plan(
     query: str,
-    failed_sql: str,
-    error_text: str,
-    prior_tables_used: list[str],
-    prior_answer_style: str,
-) -> dict[str, Any]:
-    catalog = _catalog_summary()
-    live_metadata = _runtime_column_metadata()
-    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
-    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
-    fq_prefix = f"{project}.{dataset}" if project else f"<project>.{dataset}"
-    repair_prompt = (
-        "You are fixing a failed BigQuery SELECT query for a World Cup assistant.\n"
-        "Return JSON only with keys: sql, tables_used, explanation, answer_style.\n"
+    entities: dict[str, Any],
+    resolved_teams: dict[str, int],
+    tables: list[str],
+) -> list[dict[str, str]]:
+    """Returns list of {name, purpose, sql} dicts."""
+    schema_text = _format_schema(tables)
+    fq_examples = ", ".join(_fq(t) for t in tables)
+    team_lookup = json.dumps(resolved_teams) if resolved_teams else "{}"
+
+    prompt = (
+        "You are a senior BigQuery analyst for a World Cup football assistant.\n"
+        "Generate one or more SELECT queries that, together, fully answer the user question.\n"
         "Rules:\n"
-        "- Keep one read-only SELECT/WITH query only.\n"
-        "- Use only warehouse objects from the catalog below.\n"
-        f"- Always use fully-qualified names in backticks with this exact prefix: `{fq_prefix}.object`.\n"
-        "- Never use placeholders like project.dataset, project:dataset, or <project>.\n"
-        "- Fix invalid columns/aliases/joins based on the BigQuery error and metadata.\n"
-        "- Preserve user intent and keep result practical (LIMIT when useful).\n"
-        "- Prefer canonical tables and gold views.\n\n"
-        f"User request: {query}\n"
-        f"Failed SQL: {failed_sql}\n"
-        f"BigQuery error: {error_text}\n"
-        f"Prior tables_used: {prior_tables_used}\n"
-        f"Prior answer_style: {prior_answer_style}\n\n"
-        f"Warehouse catalog:\n{catalog}\n\n"
-        f"{live_metadata}"
+        f"- Use ONLY these fully-qualified table references: {fq_examples}.\n"
+        "- Every table reference must be in backticks with the form `project.dataset.table` as shown above.\n"
+        "- Use the resolved team IDs when filtering by team. Do NOT use string LIKE on team_name when an ID is known.\n"
+        "- Use only columns that appear in the schema below.\n"
+        "- For head-to-head with v_head_to_head, remember team_a_id = LEAST(id1,id2), team_b_id = GREATEST(id1,id2).\n"
+        "- For fact_fixture filtered by both teams, use (home_team_id=A AND away_team_id=B) OR (home_team_id=B AND away_team_id=A).\n"
+        "- Prefer played matches (home_goals IS NOT NULL) when the user asks about results.\n"
+        "- Add LIMIT to keep results compact (default LIMIT 25 for lists).\n"
+        "- Each query must be a single read-only SELECT/WITH; no DDL/DML, no semicolons inside.\n"
+        "- Return JSON only with shape: {\"queries\": [{\"name\":\"...\", \"purpose\":\"...\", \"sql\":\"...\"}]}\n"
+        f"- Produce at most {_MAX_QUERIES} queries; usually 1-2 is best.\n\n"
+        f"Question: {query}\n"
+        f"Entities: {json.dumps(entities)}\n"
+        f"Resolved team IDs (name -> team_id): {team_lookup}\n\n"
+        f"Selected tables and their schemas:\n{schema_text}"
     )
-    raw = _llm.invoke(repair_prompt).content.strip()
-    return _parse_planner_output(raw)
+    raw = _llm.invoke(prompt).content
+    try:
+        parsed = _parse_json(raw)
+    except ValueError:
+        repair = _llm.invoke(
+            "Reformat the following into strict JSON with shape "
+            "{\"queries\":[{\"name\":\"...\",\"purpose\":\"...\",\"sql\":\"...\"}]}. JSON only.\n\n"
+            f"{raw}"
+        ).content
+        parsed = _parse_json(repair)
 
-
-def _validate_sql(sql: str) -> str:
-    cleaned = _normalize_sql_placeholders(str(sql or "")).strip()
-    if not cleaned:
-        raise ValueError("Empty SQL generated")
-
-    cleaned = cleaned.rstrip(";").strip()
-    if ";" in cleaned:
-        raise ValueError("Multiple SQL statements are not allowed")
-
-    if not re.match(r"(?is)^(with|select)\b", cleaned):
-        raise ValueError("Only SELECT/WITH queries are allowed")
-
-    forbidden = (
-        " insert ",
-        " update ",
-        " delete ",
-        " drop ",
-        " create ",
-        " alter ",
-        " truncate ",
-        " merge ",
-        " grant ",
-        " revoke ",
-    )
-    lowered = f" {cleaned.lower()} "
-    if any(token in lowered for token in forbidden):
-        raise ValueError("Only read-only SQL is allowed")
-
+    queries = parsed.get("queries") or []
+    cleaned: list[dict[str, str]] = []
+    for i, q in enumerate(queries[:_MAX_QUERIES]):
+        if not isinstance(q, dict):
+            continue
+        sql = str(q.get("sql", "")).strip()
+        if not sql:
+            continue
+        cleaned.append({
+            "name": str(q.get("name") or f"query_{i+1}"),
+            "purpose": str(q.get("purpose") or ""),
+            "sql": sql,
+        })
     return cleaned
 
 
-def _normalize_sql_placeholders(sql: str) -> str:
-    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
-    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5: SQL validation, normalization, and execution with one repair retry
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_FORBIDDEN_TOKENS = (
+    " insert ", " update ", " delete ", " drop ", " create ",
+    " alter ", " truncate ", " merge ", " grant ", " revoke ",
+)
+
+
+def _normalize_sql(sql: str) -> str:
+    project, dataset = _project(), _dataset()
     if not project:
-        return str(sql)
+        return sql
+    prefix = f"{project}.{dataset}"
+    out = sql
+    out = re.sub(r"`project[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)`",
+                 rf"`{prefix}.\1`", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bproject[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)\b",
+                 rf"`{prefix}.\1`", out, flags=re.IGNORECASE)
+    out = out.replace("<project>", project)
+    return out
 
-    normalized = str(sql)
-    replacement_prefix = f"{project}.{dataset}"
-    normalized = re.sub(
-        r"`project[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)`",
-        rf"`{replacement_prefix}.\1`",
-        normalized,
-        flags=re.IGNORECASE,
+
+def _validate_sql(sql: str) -> str:
+    cleaned = _normalize_sql(str(sql or "")).strip().rstrip(";").strip()
+    if not cleaned:
+        raise ValueError("Empty SQL")
+    if ";" in cleaned:
+        raise ValueError("Multiple statements not allowed")
+    if not re.match(r"(?is)^(with|select)\b", cleaned):
+        raise ValueError("Only SELECT/WITH allowed")
+    lowered = f" {cleaned.lower()} "
+    if any(tok in lowered for tok in _FORBIDDEN_TOKENS):
+        raise ValueError("Only read-only SQL allowed")
+    for table in re.findall(r"`[^`]+\.([A-Za-z0-9_]+)`", cleaned):
+        if not _is_allowed_table(table):
+            raise ValueError(f"Table '{table}' is not in the app_allowed catalog")
+    return cleaned
+
+
+def _repair_sql(
+    query: str,
+    failed_sql: str,
+    error_text: str,
+    tables: list[str],
+) -> str:
+    schema_text = _format_schema(tables)
+    fq_examples = ", ".join(_fq(t) for t in tables)
+    repair_prompt = (
+        "Fix a failed BigQuery SELECT query using the schema and error below.\n"
+        "Rules:\n"
+        f"- Use ONLY these fully-qualified tables: {fq_examples}.\n"
+        "- Use only columns in the schema (correct any wrong column names).\n"
+        "- Keep one read-only SELECT/WITH.\n"
+        "- Preserve the original analytical intent.\n"
+        "- Return JSON only: {\"sql\": \"...\"}\n\n"
+        f"User question: {query}\n"
+        f"Failed SQL: {failed_sql}\n"
+        f"BigQuery error: {error_text}\n\n"
+        f"Schemas:\n{schema_text}"
     )
-    normalized = re.sub(
-        r"\bproject[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)\b",
-        rf"`{replacement_prefix}.\1`",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    normalized = normalized.replace("<project>", project)
-    return normalized
+    parsed = _parse_json(_llm.invoke(repair_prompt).content)
+    return _validate_sql(str(parsed.get("sql", "")))
 
 
-def _format_value(value: Any) -> str:
-    if value is None:
-        return ""
-    text = str(value)
-    return text.replace("\n", " ").strip()
+def _execute_query(
+    user_query: str,
+    sql: str,
+    tables: list[str],
+) -> tuple[pd.DataFrame, str, str | None]:
+    """Returns (dataframe, sql_used, repair_note_or_None)."""
+    try:
+        validated = _validate_sql(sql)
+        df = run_query(validated)
+        return df, validated, None
+    except Exception as first_exc:
+        try:
+            repaired_sql = _repair_sql(user_query, sql, str(first_exc), tables)
+            df = run_query(repaired_sql)
+            return df, repaired_sql, f"Auto-repaired after error: {first_exc}"
+        except Exception as second_exc:
+            raise RuntimeError(
+                f"SQL failed twice. Initial error: {first_exc}. Repair error: {second_exc}"
+            ) from second_exc
 
 
-def _format_dataframe(df: pd.DataFrame) -> str:
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6: Composition
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
     if df.empty:
-        return "No rows returned."
-
-    preview = df.head(10).copy()
+        return "_No rows returned._"
+    preview = df.head(max_rows).copy()
     try:
         return preview.to_markdown(index=False)
     except Exception:
         headers = list(preview.columns)
-        lines = [" | ".join(headers), " | ".join(["---"] * len(headers))]
+        lines = [" | ".join(map(str, headers)), " | ".join(["---"] * len(headers))]
         for row in preview.itertuples(index=False):
-            lines.append(" | ".join(_format_value(cell) for cell in row))
+            lines.append(" | ".join("" if v is None else str(v).replace("\n", " ") for v in row))
         return "\n".join(lines)
 
 
-def _fallback_answer(query: str, reason: str) -> dict[str, Any]:
-    sql = _heuristic_sql(query)
-    try:
-        df = run_query(sql)
-    except Exception as exc:
-        return {
-            "answer": f"I could not run a warehouse query for your request. {reason} Error: {exc}",
-            "confidence_score": 0.2,
-            "confidence_reason": f"{reason} Heuristic fallback also failed.",
-            "metadata": {
-                "data_source": "bigquery",
-                "sql": sql,
-                "tables_used": [],
-                "row_count": 0,
-                "execution_mode": "fallback_failed",
-            },
-        }
-
-    tables_used = _extract_tables_from_sql(sql)
-    return {
-        "answer": _render_answer(query=query, sql=sql, df=df, tables_used=tables_used, answer_style="fallback"),
-        "confidence_score": 0.55,
-        "confidence_reason": f"{reason} Used a heuristic warehouse query fallback.",
-        "metadata": {
-            "data_source": "bigquery",
-            "sql": sql,
-            "tables_used": tables_used,
-            "row_count": int(len(df)),
-            "execution_mode": "fallback",
-        },
-    }
-
-
-def _extract_tables_from_sql(sql: str) -> list[str]:
-    matches = re.findall(r"`[^`]+\.([A-Za-z0-9_]+)`", sql)
-    seen: list[str] = []
-    for table in matches:
-        if table not in seen:
-            seen.append(table)
-    return seen
-
-
-def _render_countdown_answer(df: pd.DataFrame) -> str:
-    if df.empty:
-        return "I could not calculate the countdown."
-
-    row = df.iloc[0]
-    days_left = row.get("days_until_start")
-    start_date = row.get("world_cup_start_date")
-    today_utc = row.get("today_utc")
-    return (
-        f"The FIFA Men's World Cup 2026 starts on {start_date}.\n"
-        f"Today (UTC): {today_utc}\n"
-        f"Days left: {int(days_left)}"
-    )
-
-
-def _render_answer(
-    *,
-    query: str,
-    sql: str,
-    df: pd.DataFrame,
-    tables_used: list[str],
-    answer_style: str,
+def _compose_answer(
+    user_query: str,
+    executions: list[dict[str, Any]],
 ) -> str:
-    table_label = ", ".join(tables_used) if tables_used else "warehouse"
-    rows = len(df)
-    preview = _format_dataframe(df)
+    sections: list[str] = []
+    for item in executions:
+        name = item["name"]
+        purpose = item["purpose"]
+        df: pd.DataFrame = item["df"]
+        sections.append(
+            f"### {name} — {purpose}\n"
+            f"Rows: {len(df)}\n\n"
+            f"{_df_to_markdown(df)}"
+        )
+    data_block = "\n\n".join(sections) if sections else "_No data retrieved._"
 
-    lines = [
-        f"I queried BigQuery using {table_label}.",
-        f"SQL used: `{sql}`",
-        f"Rows returned: {rows}",
-        "",
-    ]
-
-    if answer_style == "catalog":
-        lines.append("Available warehouse objects:")
-    elif answer_style in {"analytics", "table"}:
-        lines.append("Result summary:")
-    else:
-        lines.append("Result preview:")
-
-    lines.append(preview)
-    return "\n".join(lines)
+    prompt = (
+        "You are answering a football question using only the BigQuery results below.\n"
+        "Rules:\n"
+        "- Ground every factual statement in the provided rows; do not invent numbers.\n"
+        "- Use concise markdown with short sections and bullet points.\n"
+        "- If a result is empty, say so explicitly for that aspect.\n"
+        "- Do not include the SQL text; summarize what the data shows.\n\n"
+        f"User question: {user_query}\n\n"
+        f"Query results:\n{data_block}"
+    )
+    return _llm.invoke(prompt).content.strip()
 
 
-def _confidence_from_result(df: pd.DataFrame, tables_used: list[str]) -> tuple[float, str]:
-    if df.empty:
-        return 0.3, "BigQuery query ran successfully but returned no rows."
-    if any(table in {"v_data_contract_tables", "INFORMATION_SCHEMA"} for table in tables_used):
-        return 0.85, "Direct warehouse metadata lookup succeeded."
-    if len(df) <= 5:
-        return 0.8, "Small, focused result set from canonical warehouse objects."
-    return 0.75, "Warehouse query succeeded with a broader result set."
+# ─────────────────────────────────────────────────────────────────────────────
+# Confidence
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _confidence(executions: list[dict[str, Any]]) -> tuple[float, str]:
+    if not executions:
+        return 0.2, "No queries executed."
+
+    total_rows = sum(len(item["df"]) for item in executions)
+    had_repair = any(item.get("repair_note") for item in executions)
+
+    if total_rows == 0:
+        return 0.35, "Queries ran but returned no rows."
+    if had_repair:
+        return 0.7, "Queries succeeded after one SQL auto-repair."
+    if total_rows >= 5:
+        return 0.85, "Multiple matching rows from canonical warehouse objects."
+    return 0.8, "Focused result set from canonical warehouse objects."
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def run_structured(query: str) -> dict[str, Any]:
+    debug: dict[str, Any] = {}
     try:
-        spec = _plan_sql(query)
-        sql = _validate_sql(str(spec.get("sql", "")))
-        tables_used = list(spec.get("tables_used", []) or _extract_tables_from_sql(sql))
-        answer_style = str(spec.get("answer_style", "analytics")).strip().lower() or "analytics"
-        try:
-            df = run_query(sql)
-        except Exception as first_exc:
-            # Retry once with schema/error-guided SQL repair before falling back.
-            repaired_spec = _repair_sql_plan(
-                query=query,
-                failed_sql=sql,
-                error_text=str(first_exc),
-                prior_tables_used=tables_used,
-                prior_answer_style=answer_style,
-            )
-            sql = _validate_sql(str(repaired_spec.get("sql", "")))
-            tables_used = list(repaired_spec.get("tables_used", []) or _extract_tables_from_sql(sql))
-            answer_style = str(repaired_spec.get("answer_style", answer_style)).strip().lower() or answer_style
-            df = run_query(sql)
+        entities = _extract_entities(query)
+        debug["entities"] = entities
 
-        answer = _render_answer(
-            query=query,
-            sql=sql,
-            df=df,
-            tables_used=tables_used,
-            answer_style=answer_style,
-        )
-        confidence_score, confidence_reason = _confidence_from_result(df, tables_used)
+        resolved_teams = _resolve_team_ids(entities["teams"])
+        debug["resolved_teams"] = resolved_teams
+
+        contract = _load_contract()
+        tables = _select_tables(query, entities, contract)
+        debug["selected_tables"] = tables
+
+        plan = _generate_sql_plan(query, entities, resolved_teams, tables)
+        if not plan:
+            raise ValueError("Planner produced no queries")
+        debug["plan"] = [{"name": p["name"], "purpose": p["purpose"]} for p in plan]
+
+        executions: list[dict[str, Any]] = []
+        for step in plan:
+            df, used_sql, repair_note = _execute_query(query, step["sql"], tables)
+            executions.append({
+                "name": step["name"],
+                "purpose": step["purpose"],
+                "sql": used_sql,
+                "df": df,
+                "repair_note": repair_note,
+            })
+
+        answer = _compose_answer(query, executions)
+        confidence_score, confidence_reason = _confidence(executions)
+
         return {
             "answer": answer,
             "confidence_score": confidence_score,
             "confidence_reason": confidence_reason,
             "metadata": {
                 "data_source": "bigquery",
-                "sql": sql,
-                "tables_used": tables_used,
-                "row_count": int(len(df)),
-                "answer_style": answer_style,
+                "entities": entities,
+                "resolved_teams": resolved_teams,
+                "tables_used": tables,
+                "queries": [
+                    {
+                        "name": item["name"],
+                        "purpose": item["purpose"],
+                        "sql": item["sql"],
+                        "row_count": int(len(item["df"])),
+                        "repair_note": item["repair_note"],
+                    }
+                    for item in executions
+                ],
             },
         }
     except Exception as exc:
-        return _fallback_answer(query=query, reason=f"BigQuery SQL planning failed: {exc}")
+        return {
+            "answer": (
+                f"I could not retrieve a warehouse answer for your question.\n"
+                f"Reason: {exc}"
+            ),
+            "confidence_score": 0.2,
+            "confidence_reason": f"BigQuery pipeline failed: {exc}",
+            "metadata": {
+                "data_source": "bigquery",
+                "error": str(exc),
+                "debug": debug,
+            },
+        }
 
 
 def run(query: str) -> str:
@@ -687,4 +695,4 @@ def run(query: str) -> str:
 
 
 if __name__ == "__main__":
-    print(run("what tables do we have in BigQuery?"))
+    print(run("What was Portugal vs Morocco last result and match stats?"))
