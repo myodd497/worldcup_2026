@@ -387,12 +387,16 @@ def _parse_planner_output(raw: str) -> dict[str, Any]:
 def _plan_sql(query: str) -> dict[str, Any]:
     catalog = _catalog_summary()
     live_metadata = _runtime_column_metadata()
+    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
+    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
+    fq_prefix = f"{project}.{dataset}" if project else f"<project>.{dataset}"
 
     prompt = (
         "You are a BigQuery analyst for a World Cup football assistant.\n"
         "Translate the user request into a single safe BigQuery SELECT query.\n"
         "Rules:\n"
-        "- Always reference tables/views as fully qualified names in backticks: `project.dataset.object`.\n"
+        f"- Always reference tables/views as fully qualified names in backticks using this exact prefix: `{fq_prefix}.object`.\n"
+        "- Never use placeholders like project.dataset, project:dataset, or <project>.\n"
         "- Use only the warehouse objects listed below.\n"
         "- Prefer app_allowed canonical tables and gold views.\n"
         "- Use source-only tables only if the user explicitly asks about raw ingestion or warehouse inventory.\n"
@@ -422,8 +426,44 @@ def _plan_sql(query: str) -> dict[str, Any]:
         return _parse_planner_output(repaired)
 
 
+def _repair_sql_plan(
+    *,
+    query: str,
+    failed_sql: str,
+    error_text: str,
+    prior_tables_used: list[str],
+    prior_answer_style: str,
+) -> dict[str, Any]:
+    catalog = _catalog_summary()
+    live_metadata = _runtime_column_metadata()
+    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
+    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
+    fq_prefix = f"{project}.{dataset}" if project else f"<project>.{dataset}"
+    repair_prompt = (
+        "You are fixing a failed BigQuery SELECT query for a World Cup assistant.\n"
+        "Return JSON only with keys: sql, tables_used, explanation, answer_style.\n"
+        "Rules:\n"
+        "- Keep one read-only SELECT/WITH query only.\n"
+        "- Use only warehouse objects from the catalog below.\n"
+        f"- Always use fully-qualified names in backticks with this exact prefix: `{fq_prefix}.object`.\n"
+        "- Never use placeholders like project.dataset, project:dataset, or <project>.\n"
+        "- Fix invalid columns/aliases/joins based on the BigQuery error and metadata.\n"
+        "- Preserve user intent and keep result practical (LIMIT when useful).\n"
+        "- Prefer canonical tables and gold views.\n\n"
+        f"User request: {query}\n"
+        f"Failed SQL: {failed_sql}\n"
+        f"BigQuery error: {error_text}\n"
+        f"Prior tables_used: {prior_tables_used}\n"
+        f"Prior answer_style: {prior_answer_style}\n\n"
+        f"Warehouse catalog:\n{catalog}\n\n"
+        f"{live_metadata}"
+    )
+    raw = _llm.invoke(repair_prompt).content.strip()
+    return _parse_planner_output(raw)
+
+
 def _validate_sql(sql: str) -> str:
-    cleaned = str(sql or "").strip()
+    cleaned = _normalize_sql_placeholders(str(sql or "")).strip()
     if not cleaned:
         raise ValueError("Empty SQL generated")
 
@@ -451,6 +491,30 @@ def _validate_sql(sql: str) -> str:
         raise ValueError("Only read-only SQL is allowed")
 
     return cleaned
+
+
+def _normalize_sql_placeholders(sql: str) -> str:
+    project = os.environ.get("BIGQUERY_PROJECT_ID", "").strip()
+    dataset = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026").strip() or "worldcup2026"
+    if not project:
+        return str(sql)
+
+    normalized = str(sql)
+    replacement_prefix = f"{project}.{dataset}"
+    normalized = re.sub(
+        r"`project[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)`",
+        rf"`{replacement_prefix}.\1`",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"\bproject[\.:]dataset\.([A-Za-z_][A-Za-z0-9_]*)\b",
+        rf"`{replacement_prefix}.\1`",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = normalized.replace("<project>", project)
+    return normalized
 
 
 def _format_value(value: Any) -> str:
@@ -578,7 +642,21 @@ def run_structured(query: str) -> dict[str, Any]:
         sql = _validate_sql(str(spec.get("sql", "")))
         tables_used = list(spec.get("tables_used", []) or _extract_tables_from_sql(sql))
         answer_style = str(spec.get("answer_style", "analytics")).strip().lower() or "analytics"
-        df = run_query(sql)
+        try:
+            df = run_query(sql)
+        except Exception as first_exc:
+            # Retry once with schema/error-guided SQL repair before falling back.
+            repaired_spec = _repair_sql_plan(
+                query=query,
+                failed_sql=sql,
+                error_text=str(first_exc),
+                prior_tables_used=tables_used,
+                prior_answer_style=answer_style,
+            )
+            sql = _validate_sql(str(repaired_spec.get("sql", "")))
+            tables_used = list(repaired_spec.get("tables_used", []) or _extract_tables_from_sql(sql))
+            answer_style = str(repaired_spec.get("answer_style", answer_style)).strip().lower() or answer_style
+            df = run_query(sql)
 
         answer = _render_answer(
             query=query,
