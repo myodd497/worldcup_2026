@@ -346,6 +346,44 @@ def _heuristic_sql(query: str) -> str:
     """.strip()
 
 
+def _parse_planner_output(raw: str) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("Planner returned empty output")
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Common LLM format: fenced JSON block.
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
+    if fenced:
+        try:
+            parsed = json.loads(fenced.group(1))
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # Best-effort extraction: take the outermost JSON object substring.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    preview = text.replace("\n", " ")[:240]
+    raise ValueError(f"Planner output was not valid JSON: {preview}")
+
+
 def _plan_sql(query: str) -> dict[str, Any]:
     catalog = _catalog_summary()
     live_metadata = _runtime_column_metadata()
@@ -370,10 +408,18 @@ def _plan_sql(query: str) -> dict[str, Any]:
         f"User request: {query}"
     )
     raw = _llm.invoke(prompt).content.strip()
-    parsed = json.loads(raw)
-    if not isinstance(parsed, dict):
-        raise ValueError("Planner output was not a JSON object")
-    return parsed
+    try:
+        return _parse_planner_output(raw)
+    except ValueError:
+        # One repair pass to coerce accidental prose/markdown into strict JSON.
+        repair_prompt = (
+            "Convert the following planner output into a strict JSON object only.\n"
+            "Required keys: sql, tables_used, explanation, answer_style.\n"
+            "Return JSON only, no markdown fences, no prose.\n\n"
+            f"Planner output:\n{raw}"
+        )
+        repaired = _llm.invoke(repair_prompt).content.strip()
+        return _parse_planner_output(repaired)
 
 
 def _validate_sql(sql: str) -> str:
