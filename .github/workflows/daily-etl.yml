@@ -2,7 +2,7 @@ name: Daily ETL (08:00 UTC)
 
 on:
   schedule:
-    - cron: "0 8 * * *"
+    - cron: "21 12 * * *"
   workflow_dispatch:
 
 jobs:
