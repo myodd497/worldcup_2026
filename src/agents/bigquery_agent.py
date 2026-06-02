@@ -427,6 +427,77 @@ def _select_tables(query: str, entities: dict[str, Any], contract: list[dict[str
     return selected
 
 
+def _deterministic_sql_plan(
+    entities: dict[str, Any],
+    resolved_teams: dict[str, int],
+) -> list[dict[str, str]]:
+    """Return exact SQL for common two-team last-result/stats questions.
+
+    This avoids LLM SQL drift for the most common head-to-head fixture lookup.
+    """
+    if not entities.get("is_head_to_head"):
+        return []
+    if len(resolved_teams) != 2:
+        return []
+
+    team_ids = sorted(int(team_id) for team_id in resolved_teams.values())
+    team_a, team_b = team_ids
+    shared_fixture_where = (
+        f"((home_team_id = {team_a} AND away_team_id = {team_b}) "
+        f"OR (home_team_id = {team_b} AND away_team_id = {team_a}))"
+    )
+    last_fixture_cte = (
+        "WITH last_fixture AS (\n"
+        f"    SELECT fixture_id, fixture_date, fixture_datetime, competition_name, competition_round,\n"
+        f"           home_team_id, home_team_name, away_team_id, away_team_name,\n"
+        f"           venue_name, venue_city, referee, status, home_goals, away_goals\n"
+        f"    FROM {_fq('fact_fixture')}\n"
+        f"    WHERE {shared_fixture_where} AND home_goals IS NOT NULL\n"
+        f"    ORDER BY fixture_date DESC, fixture_id DESC\n"
+        f"    LIMIT 1\n"
+        ")\n"
+    )
+
+    plan = [
+        {
+            "name": "Portugal vs Morocco Last Result",
+            "purpose": "Retrieve the latest played fixture between the two teams.",
+            "sql": (
+                last_fixture_cte
+                + "SELECT fixture_id, fixture_date, fixture_datetime, competition_name, competition_round,\n"
+                + "       home_team_id, home_team_name, away_team_id, away_team_name,\n"
+                + "       venue_name, venue_city, referee, status, home_goals, away_goals\n"
+                + "FROM last_fixture"
+            ),
+        }
+    ]
+
+    if entities.get("needs_match_stats"):
+        plan.append(
+            {
+                "name": "Portugal vs Morocco Match Stats",
+                "purpose": "Retrieve per-team match statistics for that latest shared fixture.",
+                "sql": (
+                    last_fixture_cte
+                    + f"SELECT fts.team_id, fts.team_name,\n"
+                    + "       MAX(IF(fts.stat_type = 'Shots on Goal', COALESCE(CAST(fts.stat_value_num AS STRING), fts.stat_value_text), NULL)) AS shots_on_goal,\n"
+                    + "       MAX(IF(fts.stat_type = 'Ball Possession', COALESCE(fts.stat_value_text, CAST(fts.stat_value_num AS STRING)), NULL)) AS ball_possession,\n"
+                    + "       MAX(IF(fts.stat_type = 'Shots off Goal', COALESCE(CAST(fts.stat_value_num AS STRING), fts.stat_value_text), NULL)) AS shots_off_goal,\n"
+                    + "       MAX(IF(fts.stat_type = 'Total Shots', COALESCE(CAST(fts.stat_value_num AS STRING), fts.stat_value_text), NULL)) AS total_shots,\n"
+                    + "       MAX(IF(fts.stat_type = 'Corner Kicks', COALESCE(CAST(fts.stat_value_num AS STRING), fts.stat_value_text), NULL)) AS corner_kicks,\n"
+                    + "       MAX(IF(fts.stat_type = 'Fouls', COALESCE(CAST(fts.stat_value_num AS STRING), fts.stat_value_text), NULL)) AS fouls\n"
+                    + f"FROM {_fq('fact_fixture_team_stat')} fts\n"
+                    + "JOIN last_fixture lf ON lf.fixture_id = fts.fixture_id\n"
+                    + f"WHERE fts.team_id IN ({team_a}, {team_b})\n"
+                    + "GROUP BY fts.team_id, fts.team_name\n"
+                    + "ORDER BY fts.team_name"
+                ),
+            }
+        )
+
+    return plan
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 4: SQL generation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -439,6 +510,10 @@ def _generate_sql_plan(
     tables: list[str],
 ) -> list[dict[str, str]]:
     """Returns list of {name, purpose, sql} dicts."""
+    deterministic = _deterministic_sql_plan(entities, resolved_teams)
+    if deterministic:
+        return deterministic
+
     schema_text = _format_schema(tables)
     usage_text = _format_usage_notes(tables)
     fq_examples = ", ".join(_fq(t) for t in tables)
@@ -715,6 +790,11 @@ def run_structured(query: str) -> dict[str, Any]:
 
         answer = _compose_answer(query, executions)
         confidence_score, confidence_reason = _confidence(executions)
+        actual_tables = list(dict.fromkeys(
+            table
+            for item in executions
+            for table in _tables_in_sql(item["sql"])
+        ))
 
         return {
             "answer": answer,
@@ -724,7 +804,8 @@ def run_structured(query: str) -> dict[str, Any]:
                 "data_source": "bigquery",
                 "entities": entities,
                 "resolved_teams": resolved_teams,
-                "tables_used": tables,
+                "selected_tables": tables,
+                "tables_used": actual_tables,
                 "queries": [
                     {
                         "name": item["name"],
