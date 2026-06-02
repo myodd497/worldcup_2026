@@ -109,13 +109,19 @@ def upload_dataframe_with_schema(
 def run_query(sql: str) -> pd.DataFrame:
     """Runs a SQL query and returns the result as a DataFrame."""
     client = _client()
-    return client.query(sql).to_dataframe()
+    project_id = os.environ["BIGQUERY_PROJECT_ID"]
+    dataset_id = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026")
+    job_config = bigquery.QueryJobConfig(default_dataset=f"{project_id}.{dataset_id}")
+    return client.query(sql, job_config=job_config).to_dataframe()
 
 
 def execute_sql(sql: str) -> None:
     """Executes SQL (DDL/DML) and waits for completion."""
     client = _client()
-    job = client.query(sql)
+    project_id = os.environ["BIGQUERY_PROJECT_ID"]
+    dataset_id = os.environ.get("BIGQUERY_DATASET_ID", "worldcup2026")
+    job_config = bigquery.QueryJobConfig(default_dataset=f"{project_id}.{dataset_id}")
+    job = client.query(sql, job_config=job_config)
     job.result()
 
 
