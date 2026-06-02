@@ -36,8 +36,8 @@ class OrchestratorState(TypedDict):
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-_INTENTS = ["news", "sentiment", "match_facts", "prediction", "chat"]
-_AGENTS = ["news", "sentiment", "match_facts", "prediction", "bigquery", "chat"]
+_INTENTS = ["news", "sentiment", "data", "prediction", "chat"]
+_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat"]
 
 _INTENT_PROMPT = """\
 You are a routing manager for a football assistant.
@@ -46,7 +46,7 @@ Task:
 - Classify the user message into exactly one of: {intents}
 
 Routing policy:
-- `match_facts`: schedules, fixtures, results, standings, historical matches, lineups, venues, referees.
+- `data`: schedules, fixtures, results, standings, historical matches, lineups, venues, referees, any structured factual query about matches or teams.
 - `prediction`: user asks for forecast, probability, odds, who will win.
 - `sentiment`: user asks fan sentiment, public opinion, social reaction.
 - `news`: user asks for latest updates, headlines, rumours, transfers, injuries from media/web.
@@ -80,20 +80,19 @@ Task:
 - Return only valid JSON: {"agents": ["..."]}
 
 Available agents:
-- news: latest media updates.
-- sentiment: fan/social sentiment.
-- match_facts: fixtures, results, standings, venues, referees, historical facts.
-- prediction: win/draw/loss probabilities.
-- bigquery: warehouse SQL over canonical fact/dim tables and gold views.
-- chat: generic conversation.
+- news: latest media news, headlines, rumours, transfers, injuries.
+- sentiment: fan/social sentiment and public opinion.
+- prediction: win/draw/loss probabilities and match forecasts.
+- bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
+- chat: generic conversation only.
 
 Selection rules:
-- Choose ALL agents that are useful for the question (not only one).
-- If the user asks for prediction/forecast, include both prediction and match_facts and bigquery
-- If the user asks for factual match data, include match_facts and bigquery.
-- If the user asks for counts, comparisons, listings, tables, schemas, or analytics, include bigquery.
-- Use chat only for clearly generic conversation.
-- Keep between 1 and 3 agents.
+- bigquery is the single source of truth for all structured football data. Always include it for any data question.
+- If the user asks for prediction/forecast, include both prediction and bigquery.
+- If the user asks for news or sentiment, include the corresponding specialist.
+- Never select more than 2 agents unless there is a clear need for a third.
+- Use chat only for clearly generic conversation with no data need.
+- Keep between 1 and 2 agents in almost all cases.
 
 Conversation context (earlier turns, if any):
 {context}
@@ -151,7 +150,7 @@ def classify_intent(state: OrchestratorState) -> OrchestratorState:
     tracker.log_step(
         "classify",
         status="executed",
-        input_data={"user_message": state["user_message"][:100]},
+        input_data={"user_message": state["user_message"]},
         output_data={"intent": intent},
     )
     return result
@@ -190,7 +189,9 @@ def route_request(state: OrchestratorState) -> OrchestratorState:
         input_data={"intent": state["intent"]},
         output_data={
             "selected_agents": selected_agents,
-            "planner_reason": str(plan.get("reason", ""))[:120],
+            "primary_agent": str(plan.get("primary_agent", "")),
+            "response_mode": str(plan.get("response_mode", "")),
+            "planner_reason": str(plan.get("reason", "")),
         },
     )
     return result
@@ -240,7 +241,6 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
     runners = {
         "news": _run_news,
         "sentiment": _run_sentiment,
-        "match_facts": _run_match_facts,
         "prediction": _run_prediction,
         "bigquery": _run_bigquery,
         "chat": _run_chat,
@@ -269,9 +269,21 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
     tracker.log_step(
         "agent_execution",
         status="executed",
-        input_data={"selected_agents": state.get("selected_agents", [])},
+        input_data={
+            "selected_agents": state.get("selected_agents", []),
+            "user_message": state["user_message"],
+        },
         output_data={
             "executed_agents": list(outputs.keys()),
+            "agent_outputs": {
+                agent: {
+                    "answer": str(payload.get("answer", "")),
+                    "confidence_score": payload.get("confidence_score"),
+                    "confidence_reason": str(payload.get("confidence_reason", "")),
+                    "data_source": str((payload.get("metadata") or {}).get("data_source", "unknown")),
+                }
+                for agent, payload in outputs.items()
+            },
         },
     )
     return result
@@ -371,6 +383,8 @@ def aggregate_outputs_node(state: OrchestratorState) -> OrchestratorState:
         output_data={
             "primary_agent": primary_agent,
             "primary_data_source": payload["metadata"]["data_source"],
+            "agents_used": payload["metadata"].get("agents_used", []),
+            "merged_answer": str(payload.get("answer", "")),
         },
     )
     return {**state, "agent_payload": payload, "selected_agent": primary_agent}
@@ -404,7 +418,7 @@ def score_confidence(state: OrchestratorState) -> OrchestratorState:
         output_data={
             "confidence_score": score,
             "confidence_label": label,
-            "confidence_reason": reason[:50],
+            "confidence_reason": reason,
         },
     )
     return result
@@ -432,8 +446,14 @@ def compose_reply(state: OrchestratorState) -> OrchestratorState:
     tracker.log_step(
         "compose",
         status="executed",
-        input_data={"confidence_label": state["confidence_label"]},
-        output_data={"final_reply": final_reply[:50]},
+        input_data={
+            "confidence_label": state["confidence_label"],
+            "confidence_score": state["confidence_score"],
+            "confidence_reason": state["confidence_reason"],
+            "selected_agent": state["selected_agent"],
+            "intent": state["intent"],
+        },
+        output_data={"final_reply": final_reply},
     )
     
     return {**state, "final_reply": final_reply}
