@@ -354,6 +354,7 @@ def _plan_sql(query: str) -> dict[str, Any]:
         "You are a BigQuery analyst for a World Cup football assistant.\n"
         "Translate the user request into a single safe BigQuery SELECT query.\n"
         "Rules:\n"
+        "- Always reference tables/views as fully qualified names in backticks: `project.dataset.object`.\n"
         "- Use only the warehouse objects listed below.\n"
         "- Prefer app_allowed canonical tables and gold views.\n"
         "- Use source-only tables only if the user explicitly asks about raw ingestion or warehouse inventory.\n"
