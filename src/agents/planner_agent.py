@@ -13,7 +13,7 @@ from langchain_openai import ChatOpenAI
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-AVAILABLE_AGENTS = ["news", "sentiment", "match_facts", "prediction", "bigquery", "chat"]
+AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat"]
 
 _PLANNER_PROMPT = """\
 You are a planning agent for a football assistant.
@@ -21,28 +21,26 @@ You are a planning agent for a football assistant.
 Your job:
 - Read the user request and recent conversation context.
 - Decide the best plan to respond.
-- Select one to three specialist agents that should be used.
+- Select one or two specialist agents that should be used.
 
 Available agents:
-- news: latest media updates.
-- sentiment: fan/social sentiment.
-- match_facts: fixtures, results, standings, venues, referees, historical facts.
-- prediction: win/draw/loss probabilities.
-- bigquery: warehouse SQL over canonical fact/dim tables and gold views.
-- chat: generic conversation.
+- news: latest media news, headlines, rumours, transfers, injuries.
+- sentiment: fan/social sentiment and public opinion.
+- prediction: win/draw/loss probabilities and match forecasts.
+- bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
+- chat: generic conversation only.
 
 Rules:
-- Prefer BigQuery for factual, analytical, temporal, schema, listing, comparison, and table questions.
-- If the user asks a question that can be answered better with structured warehouse data, include bigquery.
-- If the user asks for predictions, include prediction and often bigquery or match_facts.
+- bigquery is the single source of truth for all structured football data. Always include it for any data question.
+- If the user asks for predictions, include prediction and bigquery.
 - If the user asks for news or sentiment, include the corresponding specialist.
-- Use chat only for generic conversation.
-- Prefer the smallest useful set of agents.
+- Use chat only for generic conversation with no data need.
+- Never select more than 2 agents unless truly necessary.
 - Return JSON only.
 
 Return schema:
 {{
-    "agents": ["bigquery", "match_facts"],
+    "agents": ["bigquery"],
     "response_mode": "single|multi",
     "reason": "short explanation",
     "primary_agent": "bigquery"
@@ -74,13 +72,13 @@ def _fallback_plan(query: str) -> dict[str, Any]:
     if any(term in q for term in ("count", "how many", "average", "table", "schema", "list", "show", "days until", "days left", "countdown", "how long until")):
         agents = ["bigquery"]
     elif any(term in q for term in ("prediction", "probability", "win", "draw", "loss")):
-        agents = ["prediction", "match_facts", "bigquery"]
+        agents = ["prediction", "bigquery"]
     elif any(term in q for term in ("news", "latest", "headline", "rumour", "injury")):
         agents = ["news"]
     elif any(term in q for term in ("sentiment", "social", "fan reaction")):
         agents = ["sentiment"]
     elif any(term in q for term in ("fixture", "match", "result", "standings", "venue", "referee", "lineup")):
-        agents = ["match_facts", "bigquery"]
+        agents = ["bigquery"]
     else:
         agents = ["chat"]
 
