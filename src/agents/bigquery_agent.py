@@ -160,6 +160,37 @@ def _load_column_metadata() -> dict[str, list[dict[str, str]]]:
     return grouped
 
 
+# Critical usage hints surfaced in SQL generation/repair prompts to keep the LLM
+# honest about non-obvious table shapes.
+_TABLE_USAGE_NOTES: dict[str, str] = {
+    "fact_fixture_team_stat": (
+        "LONG FORMAT: one row per (fixture_id, team_id, stat_type). "
+        "There are NO columns named goals/shots/possession; values live in stat_value_num / stat_value_text. "
+        "To get a specific stat, filter WHERE stat_type='Ball Possession' (or similar) and read stat_value_num/_text. "
+        "To pivot multiple stats, use conditional aggregation: "
+        "MAX(IF(stat_type='Shots on Goal', stat_value_num, NULL)) AS shots_on_goal."
+    ),
+    "fact_fixture_event": (
+        "One row per match event keyed by event_key. Filter event_type IN ('Goal','Card','subst','Var') as needed."
+    ),
+    "v_head_to_head": (
+        "team_a_id = LEAST(id1,id2), team_b_id = GREATEST(id1,id2). "
+        "Always order the two team IDs before filtering."
+    ),
+    "fact_fixture": (
+        "Uses fixture_date (NOT match_date). For played matches, home_goals IS NOT NULL."
+    ),
+    "fact_team_fixture": (
+        "Team-centric (one row per team per fixture). Uses match_date. Filter by team_id."
+    ),
+}
+
+
+def _format_usage_notes(tables: list[str]) -> str:
+    lines = [f"- {t}: {_TABLE_USAGE_NOTES[t]}" for t in tables if t in _TABLE_USAGE_NOTES]
+    return "\n".join(lines) if lines else "(no special notes)"
+
+
 def _format_schema(tables: list[str]) -> str:
     schema = _load_column_metadata()
     if not schema:
@@ -409,6 +440,7 @@ def _generate_sql_plan(
 ) -> list[dict[str, str]]:
     """Returns list of {name, purpose, sql} dicts."""
     schema_text = _format_schema(tables)
+    usage_text = _format_usage_notes(tables)
     fq_examples = ", ".join(_fq(t) for t in tables)
     team_lookup = json.dumps(resolved_teams) if resolved_teams else "{}"
 
@@ -419,8 +451,11 @@ def _generate_sql_plan(
         f"- Use ONLY these fully-qualified table references: {fq_examples}.\n"
         "- Every table reference must be in backticks with the form `project.dataset.table` as shown above.\n"
         "- Use the resolved team IDs when filtering by team. Do NOT use string LIKE on team_name when an ID is known.\n"
-        "- Use only columns that appear in the schema below.\n"
-        "- For head-to-head with v_head_to_head, remember team_a_id = LEAST(id1,id2), team_b_id = GREATEST(id1,id2).\n"
+        "- Use ONLY columns listed in the schema below. NEVER invent columns.\n"
+        "- There is NO column named `id` anywhere. Primary keys are `<entity>_id` (fixture_id, team_id, competition_id, venue_id, referee_id, event_key).\n"
+        "- `fact_fixture` has `fixture_date` (NOT `match_date`). `fact_team_fixture` and `fact_fixture_team_stat` have `match_date`.\n"
+        "- `fact_fixture` does NOT have `home_team`/`away_team`; use `home_team_id`/`home_team_name` and `away_team_id`/`away_team_name`.\n"
+        "- Read the TABLE USAGE NOTES carefully — they describe non-obvious shapes (e.g. long-format stats).\n"
         "- For fact_fixture filtered by both teams, use (home_team_id=A AND away_team_id=B) OR (home_team_id=B AND away_team_id=A).\n"
         "- Prefer played matches (home_goals IS NOT NULL) when the user asks about results.\n"
         "- Add LIMIT to keep results compact (default LIMIT 25 for lists).\n"
@@ -430,6 +465,7 @@ def _generate_sql_plan(
         f"Question: {query}\n"
         f"Entities: {json.dumps(entities)}\n"
         f"Resolved team IDs (name -> team_id): {team_lookup}\n\n"
+        f"TABLE USAGE NOTES:\n{usage_text}\n\n"
         f"Selected tables and their schemas:\n{schema_text}"
     )
     raw = _llm.invoke(prompt).content
@@ -501,25 +537,44 @@ def _validate_sql(sql: str) -> str:
     return cleaned
 
 
+def _tables_in_sql(sql: str) -> list[str]:
+    """Extract table names from backticked `project.dataset.table` references in sql."""
+    found = re.findall(r"`[^`]+\.([A-Za-z0-9_]+)`", sql or "")
+    seen: list[str] = []
+    for name in found:
+        if _is_allowed_table(name) and name not in seen:
+            seen.append(name)
+    return seen
+
+
 def _repair_sql(
     query: str,
     failed_sql: str,
     error_text: str,
     tables: list[str],
+    attempt: int = 1,
 ) -> str:
-    schema_text = _format_schema(tables)
-    fq_examples = ", ".join(_fq(t) for t in tables)
+    # Include schemas for both the originally-selected tables AND any tables the
+    # failed SQL actually referenced, so the repair can correct cross-table mistakes.
+    repair_tables: list[str] = list(dict.fromkeys([*tables, *_tables_in_sql(failed_sql)]))
+    schema_text = _format_schema(repair_tables)
+    usage_text = _format_usage_notes(repair_tables)
+    fq_examples = ", ".join(_fq(t) for t in repair_tables)
     repair_prompt = (
-        "Fix a failed BigQuery SELECT query using the schema and error below.\n"
+        f"Fix a failed BigQuery SELECT query (repair attempt {attempt}).\n"
         "Rules:\n"
         f"- Use ONLY these fully-qualified tables: {fq_examples}.\n"
-        "- Use only columns in the schema (correct any wrong column names).\n"
-        "- Keep one read-only SELECT/WITH.\n"
+        "- Use ONLY columns in the schema below. NEVER invent columns.\n"
+        "- There is NO column named `id`; primary keys are `<entity>_id` (fixture_id, team_id, etc.).\n"
+        "- `fact_fixture` uses `fixture_date`; `fact_team_fixture` and `fact_fixture_team_stat` use `match_date`.\n"
+        "- Respect the TABLE USAGE NOTES (e.g., long-format stats need stat_type filter, not direct columns).\n"
+        "- Keep one read-only SELECT/WITH; no semicolons.\n"
         "- Preserve the original analytical intent.\n"
         "- Return JSON only: {\"sql\": \"...\"}\n\n"
         f"User question: {query}\n"
-        f"Failed SQL: {failed_sql}\n"
+        f"Failed SQL:\n{failed_sql}\n\n"
         f"BigQuery error: {error_text}\n\n"
+        f"TABLE USAGE NOTES:\n{usage_text}\n\n"
         f"Schemas:\n{schema_text}"
     )
     parsed = _parse_json(_llm.invoke(repair_prompt).content)
@@ -530,6 +585,7 @@ def _execute_query(
     user_query: str,
     sql: str,
     tables: list[str],
+    max_repairs: int = 2,
 ) -> tuple[pd.DataFrame, str, str | None]:
     """Returns (dataframe, sql_used, repair_note_or_None)."""
     try:
@@ -537,14 +593,21 @@ def _execute_query(
         df = run_query(validated)
         return df, validated, None
     except Exception as first_exc:
-        try:
-            repaired_sql = _repair_sql(user_query, sql, str(first_exc), tables)
-            df = run_query(repaired_sql)
-            return df, repaired_sql, f"Auto-repaired after error: {first_exc}"
-        except Exception as second_exc:
-            raise RuntimeError(
-                f"SQL failed twice. Initial error: {first_exc}. Repair error: {second_exc}"
-            ) from second_exc
+        last_sql = sql
+        last_error: Exception = first_exc
+        for attempt in range(1, max_repairs + 1):
+            try:
+                repaired_sql = _repair_sql(user_query, last_sql, str(last_error), tables, attempt=attempt)
+                df = run_query(repaired_sql)
+                note = f"Auto-repaired after error (attempt {attempt}): {last_error}"
+                return df, repaired_sql, note
+            except Exception as repair_exc:
+                last_sql = repaired_sql if 'repaired_sql' in locals() else last_sql
+                last_error = repair_exc
+        raise RuntimeError(
+            f"SQL failed after {max_repairs} repair attempts. "
+            f"Initial error: {first_exc}. Final error: {last_error}"
+        ) from last_error
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -685,6 +748,7 @@ def run_structured(query: str) -> dict[str, Any]:
             "metadata": {
                 "data_source": "bigquery",
                 "error": str(exc),
+                "tables_used": debug.get("selected_tables"),
                 "debug": debug,
             },
         }
