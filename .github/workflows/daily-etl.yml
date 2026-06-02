@@ -1,4 +1,4 @@
-name: Daily ETL (08:00 UTC)
+name: Daily ETL (12:21 UTC)
 
 on:
   schedule:
