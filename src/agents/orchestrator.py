@@ -281,6 +281,7 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
                     "confidence_score": payload.get("confidence_score"),
                     "confidence_reason": str(payload.get("confidence_reason", "")),
                     "data_source": str((payload.get("metadata") or {}).get("data_source", "unknown")),
+                    "metadata": payload.get("metadata", {}),
                 }
                 for agent, payload in outputs.items()
             },
@@ -320,6 +321,8 @@ def aggregate_outputs_node(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
     outputs = state.get("agent_outputs", {})
     primary_agent, primary_payload = _pick_primary_payload(outputs)
+    primary_source = str((primary_payload.get("metadata", {}) or {}).get("data_source", "unknown"))
+    used_direct_primary = len(outputs) == 1 or primary_source == "bigquery"
 
     bullets: list[str] = []
     for agent, payload in outputs.items():
@@ -329,24 +332,27 @@ def aggregate_outputs_node(state: OrchestratorState) -> OrchestratorState:
             continue
         bullets.append(f"[{agent} | source={source}]\n{answer}")
 
-    synthesis_prompt = (
-        "You are an orchestration synthesizer for a football assistant.\n"
-        "Combine agent outputs into one coherent response.\n"
-        "Critical rule: when there is BigQuery-backed output, treat it as source of truth for factual data.\n"
-        "Use other sources only as complementary context.\n"
-        "If sources conflict, follow BigQuery-backed facts and mention uncertainty briefly.\n"
-        "Return concise markdown suitable for chat.\n\n"
-        f"User question: {state['user_message']}\n"
-        f"Primary source agent: {primary_agent}\n"
-        f"Primary payload data source: {(primary_payload.get('metadata', {}) or {}).get('data_source', 'unknown')}\n\n"
-        "Agent outputs:\n"
-        + "\n\n".join(bullets)
-    )
+    if used_direct_primary:
+        merged_answer = str(primary_payload.get("answer", "I could not generate an answer.")).strip()
+    else:
+        synthesis_prompt = (
+            "You are an orchestration synthesizer for a football assistant.\n"
+            "Combine agent outputs into one coherent response.\n"
+            "Critical rule: when there is BigQuery-backed output, treat it as source of truth for factual data.\n"
+            "Use other sources only as complementary context.\n"
+            "If sources conflict, follow BigQuery-backed facts and mention uncertainty briefly.\n"
+            "Return concise markdown suitable for chat.\n\n"
+            f"User question: {state['user_message']}\n"
+            f"Primary source agent: {primary_agent}\n"
+            f"Primary payload data source: {primary_source}\n\n"
+            "Agent outputs:\n"
+            + "\n\n".join(bullets)
+        )
 
-    try:
-        merged_answer = _llm.invoke(synthesis_prompt).content.strip()
-    except Exception:
-        merged_answer = str(primary_payload.get("answer", "I could not generate an answer."))
+        try:
+            merged_answer = _llm.invoke(synthesis_prompt).content.strip()
+        except Exception:
+            merged_answer = str(primary_payload.get("answer", "I could not generate an answer."))
 
     confidence_values = [
         float((p or {}).get("confidence_score", 0.0) or 0.0)
@@ -365,11 +371,13 @@ def aggregate_outputs_node(state: OrchestratorState) -> OrchestratorState:
         "answer": merged_answer,
         "confidence_score": max(0.0, min(1.0, aggregate_score)),
         "confidence_reason": (
-            "Final answer synthesized from multiple agents with BigQuery-priority source selection."
+            "Primary BigQuery-backed answer preserved without synthesis."
+            if used_direct_primary
+            else "Final answer synthesized from multiple agents with BigQuery-priority source selection."
         ),
         "metadata": {
             "has_match": True,
-            "data_source": str((primary_payload.get("metadata", {}) or {}).get("data_source", "unknown")),
+            "data_source": primary_source,
             "primary_agent": primary_agent,
             "agents_used": list(outputs.keys()),
             "agent_sources": data_sources,
