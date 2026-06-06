@@ -1,8 +1,8 @@
-name: Daily ETL (12:21 UTC)
+name: Daily ETL (08:00 UTC)
 
 on:
   schedule:
-    - cron: "21 12 * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 jobs:
@@ -34,4 +34,4 @@ jobs:
           BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           GOOGLE_SERVICE_ACCOUNT_INFO: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_INFO }}
-        run: poetry run python -m src.data.run_full_etl
+        run: poetry run python -m src.data.datamodel.build_datamodel
