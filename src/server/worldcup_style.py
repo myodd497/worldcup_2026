@@ -393,53 +393,32 @@ def _get_bg_data_uri() -> str:
 
 
 def _build_world_cup_css() -> str:
-    """Build the full CSS with the trophy background image injected."""
+    """Build the full CSS with the trophy image injected as a title icon."""
     bg_uri = _get_bg_data_uri()
 
-    # Use the actual image as background if available, otherwise fallback to emoji
+    trophy_title_css = ""
     if bg_uri:
-        background_rule = f"""
-/* ── World Cup trophy image centered behind the chat content area ── */
-[data-testid="stAppViewBlockContainer"] {{
-    position: relative;
-}}
-[data-testid="stAppViewBlockContainer"]::before {{
-    content: "";
-    position: fixed;
-    top: 0;
-    left: var(--sidebar-width, 0px);
-    right: 0;
-    bottom: 0;
-    background:
-        linear-gradient(180deg, rgba(10, 31, 46, 0.50) 0%, rgba(13, 43, 62, 0.45) 40%, rgba(15, 26, 46, 0.50) 100%),
-        url("{bg_uri}");
+        trophy_title_css = f"""
+/* ── Trophy image next to the title (white bg removed via mix-blend-mode) ── */
+.wc-title-icon {{
+    display: inline-block;
+    width: 2.2em;
+    height: 2.2em;
+    background: url("{bg_uri}");
     background-size: contain;
-    background-position: center center;
     background-repeat: no-repeat;
-    background-attachment: fixed;
-    z-index: 0;
-    pointer-events: none;
-}}
-[data-testid="stAppViewContainer"] {{
-    background: linear-gradient(180deg, #0a1f2e 0%, #0d2b3e 40%, #0f1a2e 100%);
-}}
-
-/* Hide the ::before trophy emoji since we have the real image */
-[data-testid="stAppViewContainer"]::before {{
-    content: none;
+    background-position: center center;
+    vertical-align: middle;
+    margin-right: 0.1em;
+    mix-blend-mode: screen;
+    filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.25));
 }}
 """
-    else:
-        # Fallback to emoji watermark
-        background_rule = """
-/* ── Full-page background with a subtle World Cup trophy watermark ── */
-[data-testid="stAppViewContainer"] {
-    background:
-        radial-gradient(ellipse at 50% 0%, rgba(255, 215, 0, 0.08) 0%, transparent 60%),
-        linear-gradient(180deg, #0a1f2e 0%, #0d2b3e 40%, #0f1a2e 100%);
-}
 
-/* ── Trophy watermark (centered, large, very faint) ── */
+    fallback_emoji_css = ""
+    if not bg_uri:
+        fallback_emoji_css = """
+/* ── Trophy watermark (centered, large, very faint emoji fallback) ── */
 [data-testid="stAppViewContainer"]::before {
     content: "🏆";
     position: fixed;
@@ -455,7 +434,13 @@ def _build_world_cup_css() -> str:
 """
 
     return f"""<style>
-{background_rule}
+/* ── Full-page background (dark navy gradient) ── */
+[data-testid="stAppViewContainer"] {{
+    background:
+        radial-gradient(ellipse at 50% 0%, rgba(255, 215, 0, 0.08) 0%, transparent 60%),
+        linear-gradient(180deg, #0a1f2e 0%, #0d2b3e 40%, #0f1a2e 100%);
+}}
+{trophy_title_css}{fallback_emoji_css}
 /* ── Sidebar glass effect ── */
 [data-testid="stSidebar"] {{
     background: linear-gradient(180deg, rgba(10, 31, 46, 0.95) 0%, rgba(15, 26, 46, 0.95) 100%);
@@ -704,16 +689,11 @@ def get_world_cup_css() -> str:
 
 
 def world_cup_header_html() -> str:
-    """Returns HTML for a decorative World Cup header bar with trophy."""
-    return """
-<div style="
-    text-align: center;
-    padding: 12px 0 6px 0;
-    margin-bottom: 6px;
-">
-    <span style="font-size: 2.2em;">🏆</span>
-</div>
-"""
+    """Returns an inline HTML span with the trophy image for use next to the title."""
+    bg_uri = _get_bg_data_uri()
+    if not bg_uri:
+        return '<span style="font-size:2.2em;">🏆</span>'
+    return '<span class="wc-title-icon" aria-label="World Cup Trophy"></span>'
 
 
 # ---------------------------------------------------------------------------

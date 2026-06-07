@@ -127,10 +127,14 @@ st.markdown(BOUNCING_BALL_HTML, unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
-# ── Decorative trophy header ──
-st.markdown(world_cup_header_html(), unsafe_allow_html=True)
-
-st.title("🏆 World Cup 2026 Chat")
+# ── Title with trophy icon image ──
+st.markdown(
+    '<div style="display:flex;align-items:center;gap:0;padding:0;margin-top:-10px;">'
+    f'{world_cup_header_html()}'
+    '<h1 style="margin:0;padding:0;display:inline;">World Cup 2026 Chat</h1>'
+    '</div>',
+    unsafe_allow_html=True,
+)
 st.caption("⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!")
 
 if _etl_bootstrap_error:
