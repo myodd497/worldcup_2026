@@ -1,5 +1,5 @@
 ---
-description: "ACTIVE DEVELOPER — Use when the user says: edit, modify, change, update, fix, add, create, refactor, build, implement, remove, delete, or rewrite any file in this project. Also use for: BigQuery data model work, agent code, orchestrator/planner flow, web/WhatsApp server features, documentation (DATA_CONTRACT.md, AGENT_SYSTEM_ANALYSIS.md, README), or architecture restructuring. DO NOT use for general coding questions outside this project. ALWAYS edits files directly using the edit tools — never describes what to change without actually changing it."
+description: "ACTIVE DEVELOPER — Use when the user says: edit, modify, change, update, fix, add, create, refactor, build, implement, remove, delete, or rewrite any file in this project. Also use for: BigQuery data model work, agent code, orchestrator/planner flow, web/WhatsApp server features, documentation (AGENT_SYSTEM_ANALYSIS.md, README), or architecture restructuring. DO NOT use for general coding questions outside this project. ALWAYS edits files directly using the edit tools — never describes what to change without actually changing it."
 name: "World Cup Web App Specialist"
 tools: [read, search, edit, execute, web, agent]
 model: "DeepSeek V4 Pro (copilot)"
@@ -46,10 +46,12 @@ Even then: be concise. One sentence of warning, one recommended approach, ask "p
 
 | What | Where | What it does |
 |------|-------|-------------|
-| **Orchestrator** | `src/agents/orchestrator.py` | LangGraph flow: classify intent → route to agent(s) → compose result |
+| **Orchestrator** | `src/agents/orchestrator.py` | LangGraph 4-node flow: plan → execute → verify → compose |
 | **Planner** | `src/agents/planner_agent.py` | Decides which agents to invoke; defines the execution plan |
-| **BQ Agent** | `src/agents/bigquery_agent.py` | LLM function-calling loop over BQ: list→describe→sample→run_sql→answer |
-| **Match Facts** | `src/agents/match_facts_agent.py` | Structured match data via API-Football (not BQ) |
+| **BQ Agent** | `src/agents/bigquery_agent.py` | Retrieval-driven SQL agent (gpt-4o): entity resolve → schema retrieve → few-shots → validate+dry-run → execute → repair |
+| **Verifier** | `src/agents/verifier_agent.py` | LLM-as-judge (gpt-4o): groundedness + answers-question check, can trigger ONE repair |
+| **Conversation Memory** | `src/agents/conversation_memory.py` | Rolling LLM summary + structured entity store |
+| **SQL Few-Shots** | `src/agents/sql_few_shots.py` | Q→SQL example library, retrieved by keyword similarity |
 | **News** | `src/agents/news_agent.py` | Tavily/NewsAPI web search for recent articles |
 | **Sentiment** | `src/agents/sentiment_agent.py` | VADER + optional Twitter via tweepy |
 | **Prediction** | `src/agents/prediction_agent.py` | ML model predictions (XGBoost via mlflow) |
@@ -60,7 +62,8 @@ Even then: be concise. One sentence of warning, one recommended approach, ask "p
 | **Workflow Logger** | `src/agents/workflow_logger.py` | Traces every agent call, tool use, timing, and token usage |
 | **Data Catalog** | `src/data/datamodel/catalog.py` | Single source of truth for all BQ table schemas; LLM-readable |
 | **BQ Tools** | `src/tools/datamodel_tools.py` | Read-only SQL with allow-listed tables + auto-qualification |
-| **API Football** | `src/tools/api_football.py` | External API client for live match data |
+| **Entity Resolver** | `src/tools/entity_resolver.py` | Deterministic team/player name → id, with alternatives + confidence |
+| **Schema Retriever** | `src/data/datamodel/schema_retriever.py` | Returns the top-K relevant tables for a question (no whole-catalog dump) |
 | **News Search** | `src/tools/news_search.py` | Tavily + NewsAPI wrappers |
 | **Twitter** | `src/tools/twitter_sentiment.py` | Tweepy-based sentiment collection |
 | **Weather** | `src/tools/weather.py` | Weather data for match conditions |
@@ -70,7 +73,6 @@ Even then: be concise. One sentence of warning, one recommended approach, ask "p
 | **Streamlit** | `src/server/streamlit_app.py` | Dev/demo chat UI |
 | **WhatsApp** | `src/server/whatsapp_handler.py` | Twilio WhatsApp integration |
 | **ML Models** | `src/models/train.py`, `predict.py`, `feature_engineering.py` | XGBoost training/inference pipeline |
-| **Data Contract** | `DATA_CONTRACT.md` | Canonical schema reference for all BQ tables |
 | **Agent Analysis** | `AGENT_SYSTEM_ANALYSIS.md` | Deep-dive analysis of agent capabilities and gaps |
 
 ---
@@ -100,7 +102,6 @@ Even then: be concise. One sentence of warning, one recommended approach, ask "p
 ## When You Create Documentation
 
 You are the owner of:
-- `DATA_CONTRACT.md` — BQ table catalog (schemas, grain, join paths)
 - `AGENT_SYSTEM_ANALYSIS.md` — Agent capabilities, gaps, improvement roadmap
 - `README.md` — Project overview and setup
 
