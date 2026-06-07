@@ -1,7 +1,13 @@
-"""Planner Agent — decides the best response plan and specialist agents to use.
+"""Planner Agent — single-call router for the football assistant.
 
-This agent does not answer the user directly. It analyses the request, the
-conversation context, and the available agents, then returns a structured plan.
+Replaces the old two-step (classify_intent + route_request) flow.
+One gpt-4o call decides:
+  - which specialist(s) to invoke (1-2)
+  - the topic of the request (used for memory and confidence)
+  - whether the request needs the LLM verifier afterwards
+
+Specialist set after the match_facts removal:
+  bigquery | prediction | news | sentiment | rules | chat
 """
 from __future__ import annotations
 
@@ -11,140 +17,116 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 
+_MODEL = "gpt-4o"  # planning is the routing brain; bad routing = wrong specialist = wrong answer
 _llm: ChatOpenAI | None = None
 
 
 def _get_llm() -> ChatOpenAI:
-    """Lazy-initialize the LLM client so that environment variables (e.g.
-    OPENAI_API_KEY) are available at call time even when set after import.
-    """
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        _llm = ChatOpenAI(model=_MODEL, temperature=0)
     return _llm
 
-AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]
 
-_PLANNER_PROMPT = """\
-You are a planning agent for a football assistant.
+AVAILABLE_AGENTS = ["bigquery", "prediction", "news", "sentiment", "rules", "chat"]
+DATA_AGENTS = {"bigquery", "prediction"}
 
-Your job:
-- Read the user request and recent conversation context.
-- Decide the best plan to respond.
-- Select one or two specialist agents that should be used.
 
-Available agents:
-- news: latest media news, headlines, rumours, transfers, injuries.
-- sentiment: fan/social sentiment and public opinion.
-- prediction: win/draw/loss probabilities and match forecasts.
-- bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
-- chat: generic conversation only.
-- rules: official FIFA World Cup 2026 rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, financial provisions. Use this for ANY question about tournament rules, regulations, or procedures.
-- match_facts: live/structured match details — lineups, venue, referee, weather, match events, player stats, head-to-head from the API-Football external API. Use this for ANY query about specific match details, lineups, referees, venues, or weather for a particular match.
+_PROMPT = """\
+You are the routing brain for a football assistant about the FIFA World Cup 2026 and football history.
 
-Rules:
-- bigquery is the single source of truth for all structured football data. Always include it for any data question.
-- match_facts is the source for LIVE match-specific data (lineups, venue, referee, weather, match events). Use it for queries about a specific match's details.
-- If the user asks for predictions, include prediction and bigquery.
-- If the user asks for news or sentiment, include the corresponding specialist.
-- If the user asks about rules, regulations, competition format, disciplinary rules, protests, cards, eligibility, or any FIFA procedure, use the rules agent.
-- Use chat only for generic conversation with no data need.
-- Never select more than 2 agents unless truly necessary.
-- Return JSON only.
+Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 
-Return schema:
+## Specialists
+- bigquery   — ALL structured football data: teams, players, fixtures, results, standings, stats, history, head-to-head, form, schedule, comparisons, analytics. This is the source of truth for any factual question.
+- prediction — outcome probabilities for an UPCOMING match the user names explicitly (e.g. "predict Portugal vs Morocco").
+- news       — recent media headlines, transfers, injuries.
+- sentiment  — fan/social-media reaction.
+- rules      — FIFA WC2026 official regulations (cards, eligibility, format, protests, awards…).
+- chat       — greetings, generic conversation, or anything that clearly needs no data.
+
+## Rules
+- Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
+- Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
+- Never select more than 2 agents.
+- Set `needs_verifier = true` whenever `bigquery` is selected, OR when the request asks for specific numbers/lists.
+- `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
+
+## Return schema (JSON only, no prose)
 {{
-    "agents": ["bigquery"],
-    "response_mode": "single|multi",
-    "reason": "short explanation",
-    "primary_agent": "bigquery"
+  "agents": ["bigquery"],
+  "primary_agent": "bigquery",
+  "topic": "...",
+  "needs_verifier": true,
+  "reason": "short explanation"
 }}
 
-Conversation context:
+## Conversation context (earlier turns + remembered entities)
 {context}
 
-User request:
+## User request
 {message}
 """.strip()
 
 
-def _format_recent_history(messages: list[dict[str, str]], max_messages: int = 8, max_chars: int = 350) -> str:
-    if not messages:
-        return "None"
-
-    lines: list[str] = []
-    for msg in messages[-max_messages:]:
-        role = str(msg.get("role", "user")).strip().lower() or "user"
-        content = str(msg.get("content", "")).strip()
-        if content:
-            lines.append(f"{role}: {content[:max_chars]}")
-    return "\n".join(lines) if lines else "None"
-
-
 def _fallback_plan(query: str) -> dict[str, Any]:
-    q = query.lower()
-    if any(term in q for term in ("count", "how many", "average", "table", "schema", "list", "show", "days until", "days left", "countdown", "how long until")):
-        agents = ["bigquery"]
-    elif any(term in q for term in ("prediction", "probability", "win", "draw", "loss")):
-        agents = ["prediction", "bigquery"]
-    elif any(term in q for term in ("news", "latest", "headline", "rumour", "injury")):
-        agents = ["news"]
-    elif any(term in q for term in ("sentiment", "social", "fan reaction")):
-        agents = ["sentiment"]
-    elif any(term in q for term in ("lineup", "referee", "venue", "weather", "match events", "player stats", "head-to-head", "h2h")):
-        agents = ["match_facts"]
-    elif any(term in q for term in ("fixture", "match", "result", "standings")):
-        agents = ["bigquery"]
-    elif any(term in q for term in ("rule", "regulation", "format", "yellow card", "red card", "penalty", "extra time", "protest", "disciplinary", "eligibility", "squad", "kit", "doping", "award", "trophy", "substitute", "var", "offsides", "handball")):
-        agents = ["rules"]
-    else:
+    q = (query or "").lower()
+    if any(t in q for t in ("hello", "hi ", "how are you", "thanks", "thank you")):
         agents = ["chat"]
-
+    elif any(t in q for t in ("rule", "regulation", "format", "yellow card", "red card",
+                              "penalty", "extra time", "protest", "disciplinary",
+                              "eligibility", "squad", "kit", "doping", "award", "trophy")):
+        agents = ["rules"]
+    elif any(t in q for t in ("news", "headline", "rumour", "transfer", "injury")):
+        agents = ["news"]
+    elif any(t in q for t in ("sentiment", "social", "fan reaction", "fans think")):
+        agents = ["sentiment"]
+    elif any(t in q for t in ("predict", "prediction", "probability", "odds", "who will win", "forecast")):
+        agents = ["prediction", "bigquery"]
+    else:
+        agents = ["bigquery"]
     return {
         "agents": agents,
-        "response_mode": "multi" if len(agents) > 1 else "single",
-        "reason": "Fallback planner used due to planner parse failure or unavailable model.",
         "primary_agent": agents[0],
+        "topic": "",
+        "needs_verifier": "bigquery" in agents,
+        "reason": "Fallback planner (LLM unavailable or invalid JSON).",
     }
 
 
 def plan_response(
     user_message: str,
-    conversation_history: list[dict[str, str]] | None = None,
+    conversation_context: str | None = None,
 ) -> dict[str, Any]:
-    prompt = _PLANNER_PROMPT.format(
-        context=_format_recent_history(conversation_history or []),
+    prompt = _PROMPT.format(
+        context=conversation_context or "None",
         message=user_message,
     )
-
     try:
         raw = _get_llm().invoke(prompt).content.strip()
+        if raw.startswith("```"):
+            raw = raw.strip("` \n")
+            if raw.lower().startswith("json"):
+                raw = raw[4:].strip()
         parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("Planner output was not a JSON object")
 
-        candidates = parsed.get("agents", [])
-        agents = [a for a in candidates if isinstance(a, str) and a in AVAILABLE_AGENTS]
+        agents = [a for a in parsed.get("agents", []) if a in AVAILABLE_AGENTS]
         if not agents:
-            raise ValueError("Planner returned no valid agents")
+            raise ValueError("planner returned no valid agents")
+        agents = agents[:2]
 
-        primary_agent = parsed.get("primary_agent")
-        if not isinstance(primary_agent, str) or primary_agent not in agents:
-            primary_agent = agents[0]
+        primary = parsed.get("primary_agent")
+        if primary not in agents:
+            primary = agents[0]
 
-        response_mode = parsed.get("response_mode", "single")
-        if response_mode not in {"single", "multi"}:
-            response_mode = "multi" if len(agents) > 1 else "single"
-
-        reason = parsed.get("reason", "")
-        if not isinstance(reason, str):
-            reason = ""
+        needs_verifier = bool(parsed.get("needs_verifier", "bigquery" in agents))
 
         return {
-            "agents": agents[:3],
-            "response_mode": response_mode,
-            "reason": reason,
-            "primary_agent": primary_agent,
+            "agents": agents,
+            "primary_agent": primary,
+            "topic": str(parsed.get("topic") or ""),
+            "needs_verifier": needs_verifier,
+            "reason": str(parsed.get("reason") or ""),
         }
     except Exception:
         return _fallback_plan(user_message)
