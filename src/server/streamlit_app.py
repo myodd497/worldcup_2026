@@ -1,13 +1,20 @@
 """Streamlit chat UI for World Cup 2026 assistant.
 
 Run:
-    poetry run streamlit run src/server/streamlit_app.py
+    streamlit run src/server/streamlit_app.py
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import sys
+
+# Ensure the repo root is on sys.path so `src.agents.orchestrator` etc. resolve
+# regardless of working directory (critical for Streamlit Cloud).
+_sys_path_hint = os.path.join(os.path.dirname(__file__), "..", "..")
+if _sys_path_hint not in sys.path:
+    sys.path.insert(0, os.path.abspath(_sys_path_hint))
 
 import streamlit as st
 
