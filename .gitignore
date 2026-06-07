@@ -52,8 +52,6 @@ ENV/
 __pycache__/
 *.pyc
 
-# Poetry (project uses setuptools/PEP 621, not Poetry)
-poetry.lock
 
 # Streamlit secrets (set these in Streamlit Cloud dashboard UI)
 .streamlit/secrets.toml
@@ -61,3 +59,6 @@ poetry.lock
 # Data outputs
 *.parquet
 *.feather
+
+# Pip requirements (project uses Poetry)
+requirements.txt
