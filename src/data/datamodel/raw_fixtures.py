@@ -542,6 +542,65 @@ def ingest_by_team(
     }
 
 
+def ingest_by_date_range(
+    start_date: str,
+    end_date: str | None = None,
+    *,
+    snapshots: dict[int, FixtureSnapshot] | None = None,
+) -> dict[str, int]:
+    """Fetches /fixtures?date=YYYY-MM-DD for each day in [start_date, end_date].
+
+    Returns ALL fixtures worldwide for those days in one call per day. This is
+    how completed matches across friendlies/qualifiers/club competitions enter
+    the warehouse without needing per-team fetches.
+
+    Args:
+        start_date: ISO 'YYYY-MM-DD' (inclusive).
+        end_date:   ISO 'YYYY-MM-DD' (inclusive). Defaults to today (UTC).
+    """
+    ensure_table()
+    if snapshots is None:
+        snapshots = _latest_snapshot_per_match()
+
+    start_dt = datetime.fromisoformat(start_date).date()
+    end_dt = (
+        datetime.fromisoformat(end_date).date()
+        if end_date else datetime.now(timezone.utc).date()
+    )
+    if start_dt > end_dt:
+        start_dt = end_dt
+
+    api_calls = 0
+    written = skipped_final = skipped_fresh = 0
+    day_count = 0
+
+    cur = start_dt
+    while cur <= end_dt:
+        iso = cur.isoformat()
+        data = _get("fixtures", {"date": iso})
+        api_calls += 1
+        day_count += 1
+        fixtures = data.get("response", []) or []
+        w, sf, sr = _ingest_response(fixtures, snapshots)
+        written += w
+        skipped_final += sf
+        skipped_fresh += sr
+        logger.info(
+            "date=%s: api=1 fixtures=%d written=%d skipped_final=%d skipped_fresh=%d",
+            iso, len(fixtures), w, sf, sr,
+        )
+        cur = cur + timedelta(days=1)
+        time.sleep(API_SLEEP_SECONDS)
+
+    return {
+        "api_calls": api_calls,
+        "written": written,
+        "skipped_final": skipped_final,
+        "skipped_fresh": skipped_fresh,
+        "days": day_count,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Default orchestration
 # ---------------------------------------------------------------------------
@@ -563,12 +622,17 @@ def run(
     league_seasons: list[int] | None = None,
     team_seasons: list[int] | None = None,
     skip_team_fetch: bool = False,
+    since_date: str | None = None,
 ) -> dict[str, object]:
     """Default end-to-end ingestion:
       1) Ensure table exists
       2) Backfill from legacy BQ tables (zero API)
       3) Delta-fetch /fixtures by WC league + season
-      4) Delta-fetch /fixtures by each WC participant team + season
+      4) Delta-fetch /fixtures by date in [since_date, today] — picks up
+         friendlies, qualifiers, and club games across all competitions.
+         Skipped when since_date is None.
+      5) Delta-fetch /fixtures by each WC participant team + season
+         (skipped when skip_team_fetch=True; default behaviour for cron).
     """
     ensure_table()
     backfill_counts = backfill_from_legacy()
@@ -580,6 +644,13 @@ def run(
         league_seasons or WC_LEAGUE_SEASONS,
         snapshots=snapshots,
     )
+
+    date_stats: dict[str, int] = {
+        "api_calls": 0, "written": 0,
+        "skipped_final": 0, "skipped_fresh": 0, "days": 0,
+    }
+    if since_date:
+        date_stats = ingest_by_date_range(since_date, snapshots=snapshots)
 
     team_stats: dict[str, int] = {"api_calls": 0, "written": 0,
                                   "skipped_final": 0, "skipped_fresh": 0}
@@ -597,8 +668,13 @@ def run(
     summary = {
         "backfill": backfill_counts,
         "league_fetch": league_stats,
+        "date_fetch": date_stats,
         "team_fetch": team_stats,
-        "total_api_calls": league_stats["api_calls"] + team_stats["api_calls"],
+        "total_api_calls": (
+            league_stats["api_calls"]
+            + date_stats["api_calls"]
+            + team_stats["api_calls"]
+        ),
     }
     logger.info("raw_fixtures run summary: %s", summary)
     return summary
