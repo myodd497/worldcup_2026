@@ -29,9 +29,16 @@ jobs:
           poetry install --no-interaction --no-ansi
 
       - name: Run full ETL
+        id: etl
         env:
           BIGQUERY_PROJECT_ID: ${{ secrets.BIGQUERY_PROJECT_ID }}
           BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           GOOGLE_SERVICE_ACCOUNT_INFO: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_INFO }}
-        run: poetry run python -m src.data.datamodel.build_datamodel
+          RUN_FULL_ETL_ON_STARTUP: "true"
+        run: |
+          poetry run python -m src.data.datamodel.build_datamodel 2>&1 | tee etl_output.log
+
+      - name: Print summary (last 30 lines)
+        if: always()
+        run: tail -30 etl_output.log
