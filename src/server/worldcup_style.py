@@ -399,16 +399,29 @@ def _build_world_cup_css() -> str:
     # Use the actual image as background if available, otherwise fallback to emoji
     if bg_uri:
         background_rule = f"""
-/* ── Full-page background with the World Cup trophy image ── */
-[data-testid="stAppViewContainer"] {{
+/* ── World Cup trophy image centered behind the chat content area ── */
+[data-testid="stAppViewBlockContainer"] {{
+    position: relative;
+}}
+[data-testid="stAppViewBlockContainer"]::before {{
+    content: "";
+    position: fixed;
+    top: 0;
+    left: var(--sidebar-width, 0px);
+    right: 0;
+    bottom: 0;
     background:
-        linear-gradient(180deg, rgba(10, 31, 46, 0.55) 0%, rgba(13, 43, 62, 0.50) 40%, rgba(15, 26, 46, 0.55) 100%),
+        linear-gradient(180deg, rgba(10, 31, 46, 0.50) 0%, rgba(13, 43, 62, 0.45) 40%, rgba(15, 26, 46, 0.50) 100%),
         url("{bg_uri}");
     background-size: contain;
     background-position: center center;
     background-repeat: no-repeat;
     background-attachment: fixed;
+    z-index: 0;
+    pointer-events: none;
 }}
+[data-testid="stAppViewContainer"] {{
+    background: linear-gradient(180deg, #0a1f2e 0%, #0d2b3e 40%, #0f1a2e 100%);
 }}
 
 /* Hide the ::before trophy emoji since we have the real image */

@@ -133,9 +133,6 @@ st.markdown(world_cup_header_html(), unsafe_allow_html=True)
 st.title("🏆 World Cup 2026 Chat")
 st.caption("⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!")
 
-# ── Countdown timer ──
-st.markdown(countdown_html(), unsafe_allow_html=True)
-
 if _etl_bootstrap_error:
     st.warning(
         "Startup ETL did not run successfully. The app will continue with existing data. "
@@ -159,7 +156,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("⚽ Next Match")
-    st.markdown(get_next_match_html(), unsafe_allow_html=True)
+    st.html(get_next_match_html())
 
     st.divider()
     st.subheader("📡 ETL Status")
