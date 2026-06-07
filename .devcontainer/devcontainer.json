@@ -17,9 +17,9 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; pip3 install --user 'poetry>=1.8'; poetry config virtualenvs.in-project true; poetry install --no-interaction --no-ansi; echo '✅ Poetry environment ready'",
   "postAttachCommand": {
-    "server": "streamlit run src/server/streamlit_app.py --server.enableCORS false --server.enableXsrfProtection false"
+    "server": "poetry run streamlit run src/server/streamlit_app.py --server.enableCORS false --server.enableXsrfProtection false"
   },
   "portsAttributes": {
     "8501": {
