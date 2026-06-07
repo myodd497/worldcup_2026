@@ -7,8 +7,15 @@ Built entirely from raw_* tables (zero API calls). Pulls team_ids from:
   - raw_standings (team_id)
 
 For each team_id, picks the most recent non-NULL team_name observed.
-Also tags is_wc2026_participant via legacy `team_stats` season=2026 when present.
+
+is_wc2026_participant is resolved exclusively from fact_match:
+any team that appears as home or away in a match with competition_id=1
+(World Cup) and season_year=2026 is flagged as TRUE. This is fully
+data-driven — as soon as WC2026 fixtures are ingested via the API,
+participating teams are automatically detected without any hard-coded
+lists.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,14 +30,13 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "dim_team"
 
-
 DIM_TEAM_SCHEMA: list[bigquery.SchemaField] = [
     bigquery.SchemaField("team_id",     "INT64",  mode="REQUIRED",
                          description="Primary key. API-Football team ID."),
     bigquery.SchemaField("team_name",   "STRING",
                          description="Most recent name observed for this team across raw_* tables."),
     bigquery.SchemaField("is_wc2026_participant", "BOOL",
-                         description="True if this team appears as a WC 2026 participant in legacy team_stats(season=2026)."),
+                         description="True if this team is an official FIFA World Cup 2026 participant (48-team tournament)."),
     bigquery.SchemaField("first_seen_date", "DATE",
                          description="Earliest match_date this team appears in raw_fixtures."),
     bigquery.SchemaField("last_seen_date",  "DATE",
@@ -62,25 +68,15 @@ def _table_exists(table: str) -> bool:
 
 
 def build() -> dict[str, object]:
-    """Builds dim_team via CREATE OR REPLACE. Idempotent."""
+    """Builds dim_team via CREATE OR REPLACE. Idempotent.
+
+    is_wc2026_participant is resolved exclusively from fact_match:
+    any team with competition_id=1 (World Cup) and season_year=2026
+    is flagged TRUE. Fully data-driven — no hard-coded team lists.
+    """
     client = _bq_tools._client()
     fqn = _fqn()
     now_iso = datetime.now(timezone.utc).isoformat()
-
-    has_team_stats = _table_exists("team_stats")
-    wc_cte = ""
-    wc_join = ""
-    wc_select = "FALSE AS is_wc2026_participant"
-    if has_team_stats:
-        wc_cte = f"""
-        , wc AS (
-          SELECT DISTINCT team_id
-          FROM {_ref('team_stats')}
-          WHERE season = 2026 AND team_id IS NOT NULL
-        )
-        """
-        wc_join = "LEFT JOIN wc USING (team_id)"
-        wc_select = "(wc.team_id IS NOT NULL) AS is_wc2026_participant"
 
     select_sql = f"""
     WITH all_team_rows AS (
@@ -109,25 +105,35 @@ def build() -> dict[str, object]:
         COUNT(*)        AS match_count
       FROM all_team_rows
       GROUP BY team_id
+    ),
+    wc2026_ids AS (
+      SELECT home_team_id AS team_id
+      FROM {_ref('fact_match')}
+      WHERE competition_id = 1 AND season_year = 2026 AND home_team_id IS NOT NULL
+      UNION DISTINCT
+      SELECT away_team_id AS team_id
+      FROM {_ref('fact_match')}
+      WHERE competition_id = 1 AND season_year = 2026 AND away_team_id IS NOT NULL
     )
-    {wc_cte}
     SELECT
       n.team_id,
       n.team_name,
-      {wc_select},
+      (w.team_id IS NOT NULL) AS is_wc2026_participant,
       n.first_seen_date,
       n.last_seen_date,
       n.match_count,
       TIMESTAMP('{now_iso}') AS built_at
     FROM name_per_team n
-    {wc_join}
+    LEFT JOIN (SELECT DISTINCT team_id FROM wc2026_ids) w USING (team_id)
     """
 
     table = bigquery.Table(fqn, schema=DIM_TEAM_SCHEMA)
     table.description = (
         "Canonical team dimension. Grain: one row per team_id. "
-        "Built from raw_fixtures + raw_standings (+ legacy team_stats for WC2026 flag). "
-        "Zero API calls."
+        "Built from raw_fixtures + raw_standings. "
+        "is_wc2026_participant is set exclusively from fact_match "
+        "(competition_id=1, season_year=2026). "
+        "Fully data-driven — zero hard-coded IDs, zero API calls."
     )
     table.clustering_fields = ["team_id"]
     client.delete_table(fqn, not_found_ok=True)
