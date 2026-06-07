@@ -121,9 +121,6 @@ st.set_page_config(page_title="🏆 World Cup 2026 Chat", page_icon="🏆", layo
 # ── Inject custom World Cup CSS (trophy background, glass chat bubbles, gold accents, animations) ──
 st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 
-# ── Bouncing football animation (floats across screen) ──
-st.markdown(BOUNCING_BALL_HTML, unsafe_allow_html=True)
-
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
@@ -188,7 +185,7 @@ for msg in st.session_state.messages:
     content = inject_flag_emojis(content)
     # Embed player images for known players
     content = inject_player_images(content)
-    with st.chat_message(role, avatar="🏆" if role == "assistant" else "👤"):
+    with st.chat_message(role, avatar="assistant" if role == "assistant" else "👤"):
         st.markdown(content, unsafe_allow_html=True)
 
 
@@ -221,7 +218,7 @@ def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history
             loop.close()
 
 
-prompt = st.chat_input("⚽ Ask about matches, predictions, standings, sentiment...")
+prompt = st.chat_input("Ask about matches, predictions, standings, sentiment...")
 if prompt:
     # Inject flag emojis into user message before storing
     display_prompt = inject_flag_emojis(prompt)
@@ -230,7 +227,7 @@ if prompt:
     with st.chat_message("user", avatar="👤"):
         st.markdown(display_prompt, unsafe_allow_html=True)
 
-    with st.chat_message("assistant", avatar="🏆"):
+    with st.chat_message("assistant", avatar="assistant"):
         with st.spinner("🏆 Thinking..."):
             # Send only prior turns as context; current prompt is passed separately.
             history = st.session_state.messages[:-1]

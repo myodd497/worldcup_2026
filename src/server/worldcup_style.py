@@ -402,16 +402,30 @@ def _build_world_cup_css() -> str:
 /* ── Trophy image next to the title (white bg removed via mix-blend-mode) ── */
 .wc-title-icon {{
     display: inline-block;
-    width: 2.2em;
-    height: 2.2em;
+    width: 3.5em;
+    height: 3.5em;
     background: url("{bg_uri}");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center center;
     vertical-align: middle;
-    margin-right: 0.1em;
+    margin-right: 0.15em;
     mix-blend-mode: screen;
-    filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.25));
+    filter: drop-shadow(0 0 10px rgba(255, 215, 0, 0.3));
+}}
+
+/* ── Trophy avatar in chat (overrides Streamlit's emoji avatar) ── */
+[data-testid="stChatMessageAvatar"][aria-label="assistant"] {{
+    background: url("{bg_uri}") !important;
+    background-size: contain !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+    mix-blend-mode: screen;
+}}
+[data-testid="stChatMessageAvatar"][aria-label="assistant"] svg,
+[data-testid="stChatMessageAvatar"][aria-label="assistant"] img,
+[data-testid="stChatMessageAvatar"][aria-label="assistant"] span {{
+    display: none !important;
 }}
 """
 
