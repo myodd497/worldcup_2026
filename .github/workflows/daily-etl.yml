@@ -1,13 +1,19 @@
-name: Daily ETL (08:00 UTC)
+name: Daily ETL (12:21 UTC)
 
 on:
   schedule:
-    - cron: "0 8 * * *"
+    - cron: "21 12 * * *"
   workflow_dispatch:
+
+# Prevent overlapping runs (manual + scheduled).
+concurrency:
+  group: daily-etl
+  cancel-in-progress: false
 
 jobs:
   run-etl:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -35,10 +41,25 @@ jobs:
           BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           GOOGLE_SERVICE_ACCOUNT_INFO: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_INFO }}
-          RUN_FULL_ETL_ON_STARTUP: "true"
+          GITHUB_SHA: ${{ github.sha }}
         run: |
+          set -o pipefail
           poetry run python -m src.data.datamodel.build_datamodel 2>&1 | tee etl_output.log
 
-      - name: Print summary (last 30 lines)
+      - name: Print summary (last 60 lines)
         if: always()
-        run: tail -30 etl_output.log
+        run: tail -60 etl_output.log || true
+
+      - name: Upload full log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-log-${{ github.run_id }}
+          path: etl_output.log
+          retention-days: 14
+
+      - name: Mark job failed on ETL error
+        if: failure()
+        run: |
+          echo "::error::Daily ETL failed. See uploaded artifact 'etl-log-${{ github.run_id }}' and the etl_run_status BigQuery table for details."
+          exit 1
