@@ -20,8 +20,9 @@ from typing import Any
 from google.cloud import bigquery
 
 from src.data.datamodel import (
-    dim_team, dim_competition, dim_venue, dim_date,
+    dim_team, dim_competition, dim_venue, dim_date, dim_player,
     fact_match, fact_match_team, fact_match_event, fact_standings_snapshot,
+    fact_player_match_stat,
     mart_team_profile, mart_team_form, mart_head_to_head,
     mart_match_history, mart_match_upcoming, mart_tournament_state,
 )
@@ -83,6 +84,16 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         primary_keys=("calendar_date",),
         agent_visible=True,
     ),
+    TableSpec(
+        name="dim_player", layer="dim",
+        grain="One row per player_id.",
+        description="Player master. Use to resolve player_name → player_id and flag WC2026 participants. Includes career aggregates (goals, assists, minutes).",
+        schema=tuple(dim_player.DIM_PLAYER_SCHEMA),
+        primary_keys=("player_id",),
+        agent_visible=True,
+        usage_hint="Always use this for player-name → player_id lookups. Filter is_wc2026_participant for WC questions. is_goalkeeper filters GKs.",
+        example_questions=("Who is the top scorer in WC2026?", "List all goalkeepers in WC2026."),
+    ),
 
     # ── FACTS ───────────────────────────────────────────────────────────────
     TableSpec(
@@ -127,6 +138,28 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(fact_standings_snapshot.FACT_STANDINGS_SCHEMA),
         primary_keys=("competition_id", "season_year", "team_id", "snapshot_date"),
         agent_visible=True,
+    ),
+    TableSpec(
+        name="fact_player_match_stat", layer="fact",
+        grain="One row per (match_id, team_id, player_id).",
+        description="Per-player match statistics: minutes, goals, assists, shots, passes, xG, dribbles, tackles, cards, rating. The workhorse for all player-level questions.",
+        schema=tuple(fact_player_match_stat.FACT_PLAYER_MATCH_STAT_SCHEMA),
+        primary_keys=("match_id", "team_id", "player_id"),
+        agent_visible=True,
+        usage_hint=(
+            "Use for ANY player stat question: top scorers, most assists, minutes played, passes, "
+            "cards, rating. JOIN dim_player for player details and dim_team for team name. "
+            "Filter competition_id=1 AND season_year=2026 for WC2026-specific. "
+            "goal_contributions = goals + assists. pass_accuracy_pct is pre-computed. "
+            "saves/goals_conceded are GK-only (NULL for outfield players)."
+        ),
+        example_questions=(
+            "Who are the top 10 goal scorers in WC2026?",
+            "Which player has the most assists?",
+            "Who has the most minutes played for Portugal?",
+            "Show all players with red cards in WC2026.",
+            "Which goalkeeper has the most saves?",
+        ),
     ),
 
     # ── MARTS (preferred — agent should start here) ─────────────────────────

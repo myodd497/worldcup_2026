@@ -55,14 +55,17 @@ from src.data.datamodel import (
     raw_fixture_events,
     raw_fixture_statistics,
     raw_standings,
+    raw_player_stats,
     dim_team,
     dim_competition,
     dim_venue,
     dim_date,
+    dim_player,
     fact_match,
     fact_match_team,
     fact_match_event,
     fact_standings_snapshot,
+    fact_player_match_stat,
     mart_team_profile,
     mart_team_form,
     mart_head_to_head,
@@ -149,6 +152,10 @@ def _build_raw_steps(
             "raw_fixture_statistics",
             lambda: raw_fixture_statistics.run(since_date=since_date),
         ),
+        (
+            "raw_player_stats",
+            lambda: raw_player_stats.run(since_date=since_date),
+        ),
         ("raw_standings", raw_standings.run),
     ]
 
@@ -159,6 +166,7 @@ DIM_STEPS: list[tuple[str, Callable[[], dict]]] = [
     ("dim_competition", dim_competition.run),
     ("dim_venue",       dim_venue.run),
     ("dim_date",        dim_date.run),
+    ("dim_player",      dim_player.run),
 ]
 
 FACT_STEPS: list[tuple[str, Callable[[], dict]]] = [
@@ -167,6 +175,7 @@ FACT_STEPS: list[tuple[str, Callable[[], dict]]] = [
     ("fact_match_team",         fact_match_team.run),
     ("fact_match_event",        fact_match_event.run),
     ("fact_standings_snapshot", fact_standings_snapshot.run),
+    ("fact_player_match_stat",  fact_player_match_stat.run),
 ]
 
 MART_STEPS: list[tuple[str, Callable[[], dict]]] = [

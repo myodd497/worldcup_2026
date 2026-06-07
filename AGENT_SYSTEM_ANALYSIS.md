@@ -11,7 +11,7 @@
 |---|------|----------|--------|
 | **R1** | ~~`match_facts_agent` is unreachable~~ ✅ FIXED | 🟢 Resolved | Now in `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Fully routable. |
 | **R2** | ~~Regulations file is empty~~ ✅ FIXED | 🟢 Resolved | `Docs/FWC26_regulations_EN.txt` now contains regulation text (52 articles across 14 sections). Rules agent is functional. |
-| **R3** | No player-level data model | 🔴 Critical | No `dim_player`, `fact_player_match_stat`, `fact_lineup`, or `mart_player_form`. ~40% of target questions are impossible. |
+| **R3** | ~~No player-level data model~~ ✅ FIXED | 🟢 Resolved | `dim_player` (444 players), `fact_player_match_stat` (447 rows across 15 matches), `raw_player_stats` (497 rows) now exist. API-Football `/fixtures/players` endpoint is the data source. All player stat queries (goals, assists, minutes, passes, cards, rating) now work via `fact_player_match_stat`. |
 | **R4** | No live data freshness pipeline | 🟡 High | No cron/scheduler for API-Football polling during matches. Users querying during live games get stale BQ data or nothing. |
 | **R5** | Twitter/X sentiment API likely broken | 🟡 High | Twitter API v2 free tier is severely restricted. The `twitter_sentiment.py` tool will likely return 0 tweets. |
 | **R6** | Prediction model is heuristic-only | 🟡 High | Trained XGBoost model path (`bin/models_deployed/wc2026_predictor.pkl`) returns uniform 33/33/33 fallback. No real ML model deployed. |
