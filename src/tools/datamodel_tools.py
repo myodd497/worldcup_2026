@@ -28,7 +28,7 @@ from src.data.datamodel.catalog import (
     get_table,
     list_tables,
 )
-from src.tools.bigquery_tools import run_query
+from src.tools.bigquery_tools import _client, run_query
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +103,48 @@ def sample_table_tool(name: str, limit: int = _DEFAULT_SAMPLE_LIMIT) -> str:
 
 
 def run_sql_tool(sql: str, max_rows: int = _DEFAULT_MAX_ROWS) -> dict[str, Any]:
-    """Execute a read-only SQL query. Returns dict with rows (list[dict]), row_count, error."""
+    """Execute a read-only SQL query. Returns dict with rows (list[dict]), row_count, error.
+
+    Pre-flight: validate syntax/whitelist, then BigQuery dry-run to catch column
+    errors AND estimate bytes-scanned. If bytes_billed_estimate exceeds the cap,
+    refuse the query rather than run it.
+    """
     try:
         validated = validate_sql(sql)
     except ValueError as exc:
-        return {"error": str(exc), "rows": [], "row_count": 0, "sql": sql}
+        return {"error": str(exc), "rows": [], "row_count": 0, "sql": sql, "bytes_billed_estimate": 0}
+
+    # Dry-run to surface column/typing errors cheaply and to enforce a cost cap.
+    try:
+        bytes_estimate = dry_run_sql(validated)
+    except Exception as exc:
+        return {
+            "error": f"dry-run failed: {exc}",
+            "rows": [], "row_count": 0,
+            "sql": validated,
+            "bytes_billed_estimate": 0,
+        }
+    if bytes_estimate > _MAX_BYTES_BILLED:
+        return {
+            "error": (
+                f"Query would scan {bytes_estimate / 1e9:.2f} GB which exceeds the "
+                f"{_MAX_BYTES_BILLED / 1e9:.2f} GB cap. Add a more selective WHERE "
+                f"clause (e.g. team_id, competition_id, date range) and try again."
+            ),
+            "rows": [], "row_count": 0,
+            "sql": validated,
+            "bytes_billed_estimate": bytes_estimate,
+        }
 
     try:
         df = run_query(validated)
     except Exception as exc:
-        return {"error": str(exc), "rows": [], "row_count": 0, "sql": validated}
+        return {
+            "error": str(exc),
+            "rows": [], "row_count": 0,
+            "sql": validated,
+            "bytes_billed_estimate": bytes_estimate,
+        }
 
     if len(df) > max_rows:
         df = df.head(max_rows)
@@ -123,7 +155,23 @@ def run_sql_tool(sql: str, max_rows: int = _DEFAULT_MAX_ROWS) -> dict[str, Any]:
         "row_count": int(len(df)),
         "rows": df.to_dict(orient="records"),
         "columns": list(df.columns),
+        "bytes_billed_estimate": bytes_estimate,
     }
+
+
+def dry_run_sql(sql: str) -> int:
+    """BigQuery dry-run. Returns total_bytes_processed; raises on syntax/column errors."""
+    from google.cloud import bigquery
+    project = __import__("os").environ["BIGQUERY_PROJECT_ID"]
+    dataset = __import__("os").environ.get("BIGQUERY_DATASET_ID", "worldcup2026")
+    client = _client()
+    job_config = bigquery.QueryJobConfig(
+        dry_run=True,
+        use_query_cache=False,
+        default_dataset=f"{project}.{dataset}",
+    )
+    job = client.query(sql, job_config=job_config)
+    return int(job.total_bytes_processed or 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
