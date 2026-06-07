@@ -8,17 +8,20 @@ from src.tools.bigquery_tools import run_query
 
 
 def load_fixtures_df() -> pd.DataFrame:
+    import os
+    project = os.environ["BIGQUERY_PROJECT_ID"]
+    dataset = os.environ["BIGQUERY_DATASET_ID"]
     sql = f"""
         SELECT
-            fixture_id,
-            fixture_datetime,
-            season,
-            status,
+            match_id        AS fixture_id,
+            kickoff_at      AS fixture_datetime,
+            season_year     AS season,
+            match_status    AS status,
             home_team_id,
             away_team_id,
             home_goals,
             away_goals
-        FROM `{__import__('os').environ['BIGQUERY_PROJECT_ID']}.{__import__('os').environ['BIGQUERY_DATASET_ID']}.fact_fixture`
+        FROM `{project}.{dataset}.fact_match`
     """
     return run_query(sql)
 
@@ -30,7 +33,7 @@ def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
       y = target (0=away win, 1=draw, 2=home win)
     """
     # Select completed matches only
-    completed = df[df["status"] == "FT"].copy()
+    completed = df[df["status"] == "FINISHED"].copy()
 
     home_goals = completed["home_goals"].fillna(0).astype(int)
     away_goals = completed["away_goals"].fillna(0).astype(int)
