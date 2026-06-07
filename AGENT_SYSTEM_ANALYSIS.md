@@ -245,6 +245,7 @@ There's also a **source-level** table `fact_fixture` used by `api_football.py` a
 - "What substitutions have happened in this match and what is the coach trying to do?" — Substitutions are in `fact_match_event` but tactical analysis requires LLM reasoning (not BQ)
 - "Who is the top player to watch?" — No player performance metrics
 - Weather at venue — Weather is handled by `match_facts_agent` + OpenWeatherMap, not BQ
+- "Who has played the most minutes?" — No `minutes_played` column on any fact table; requires new raw source: API-Football player statistics endpoint (see Phase 1, P1.7)
 
 #### Guardrails (in `datamodel_tools.py`)
 
@@ -451,6 +452,7 @@ The data model has **two tiers**:
 | **No `fact_lineup`** | No structured starting XI | "What's the lineup?" |
 | **No live match state** | No in-play data (current minute, live score updates) | "What's happening now in the game?" |
 | **No odds table** | No betting odds integration | "What are the odds?" |
+| **No `minutes_played` column** | Cannot answer "most minutes played" player questions | "Who has played the most minutes?" Requires API-Football player statistics endpoint (see Phase 1, P1.7). |
 | **No `dim_coach`** | No coach/manager information | "Who is the coach?" "What's the coach's style?" |
 
 ### 3.3 DATA_CONTRACT.md vs. Reality
@@ -585,8 +587,9 @@ Below is the prioritized list of improvements to take this app from its current 
 | **P1.4** | Create `fact_lineup` | 1 day | 🔴 Critical | Structured starting XI per match. Table: (match_id, team_id, player_id, position, is_starter, jersey_number). |
 | **P1.5** | Create `mart_player_form` | 1 day | 🟡 High | Rolling player performance over last 5 games. Aggregates `fact_player_match_stat`. Enables "player to watch" queries. |
 | **P1.6** | Add streaming to orchestrator | 3 days | 🟡 High | Use SSE (Server-Sent Events) or WebSocket. Stream each pipeline step: "Classifying intent... → Routing to BigQuery... → Querying data... → Composing answer...". Users see progress within 1 second. |
-| **P1.7** | Wire `match_facts_agent` for live API fallback | 1 day | 🟡 High | When BQ has no data for today's match (ETL not yet run), fall back to API-Football live endpoint. Critical for game-day use. |
-| **P1.8** | Fix orchestrator to eliminate redundant classification | 2 hours | 🟢 Med | Remove `classify_intent` node or use its output in routing. Currently both `classify_intent` AND planner run — two LLM calls for the same decision. |
+| **P1.7** | Add `minutes_played` via API-Football player statistics endpoint | 2 days | 🟡 High | The `fact_match_event` table tracks goals/cards/substitutions but has no `minutes_played` column. To answer "who has played the most minutes" questions, extend the ETL to ingest player-level match statistics from the API-Football `/fixtures/players` endpoint. This populates a new `fact_player_match_stat` table with `minutes_played`, `rating`, and other per-player-per-match metrics. Also backfills historical data for all WC2026 participants. |
+| **P1.8** | Wire `match_facts_agent` for live API fallback | 1 day | 🟡 High | When BQ has no data for today's match (ETL not yet run), fall back to API-Football live endpoint. Critical for game-day use. |
+| **P1.9** | Fix orchestrator to eliminate redundant classification | 2 hours | 🟢 Med | Remove `classify_intent` node or use its output in routing. Currently both `classify_intent` AND planner run — two LLM calls for the same decision. |
 
 ### Phase 2 — Enable the Game-Day Experience (Should-Do, 3-4 weeks)
 
@@ -640,8 +643,9 @@ The foundation is solid — the orchestrator, BQ agent, catalog system, guardrai
 | P1.4 | fact_lineup | 69 | **75** | +6 |
 | P1.5 | mart_player_form | 75 | **79** | +4 |
 | P1.6 | Streaming orchestrator | 79 | **82** | +3 |
-| P1.7 | Live API fallback for match_facts | 82 | **85** | +3 |
-| P1.8 | Eliminate redundant classification | 85 | **86** | +1 |
+| P1.7 | Add minutes_played via API-Football player endpoint | 82 | **85** | +3 |
+| P1.8 | Live API fallback for match_facts | 85 | **87** | +2 |
+| P1.9 | Eliminate redundant classification | 87 | **88** | +1 |
 | P2.1 | Pre-match summary agent | 86 | **93** | +7 |
 | P2.2 | Live polling cron (5-min) | 93 | **95** | +2 |
 | P2.3 | dim_coach | 95 | **97** | +2 |

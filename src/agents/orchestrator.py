@@ -1,5 +1,5 @@
 """
-Orchestrator Agent — receives the user's WhatsApp message, classifies intent,
+Orchestrator Agent — receives the user's message, classifies intent,
 routes to the appropriate specialist agent via LangGraph, computes confidence,
 and uses a dedicated result composer to format the final response.
 """
