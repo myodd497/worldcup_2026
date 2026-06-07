@@ -207,6 +207,7 @@ def _matches_missing_events(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> list[tuple[int, datetime | None]]:
     """Returns completed matches in raw_fixtures still missing from raw_fixture_events.
 
@@ -214,9 +215,12 @@ def _matches_missing_events(
         limit: cap the number of returned matches.
         competition_ids: include matches whose competition_id is in this list.
         since_date: 'YYYY-MM-DD'; include matches on/after this date.
+        max_age_days: hard floor on match_date >= today - N days. Prevents
+            burning daily API quota on ancient fixtures that the API will
+            never have events for. Pass None to disable.
 
-    Scoping is a union: a match qualifies if EITHER filter matches. If neither
-    filter is provided, all completed missing matches qualify.
+    Scoping is a union of (competition_ids, since_date), intersected with the
+    recency floor.
     """
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
 
@@ -227,6 +231,11 @@ def _matches_missing_events(
     if since_date:
         scope_clauses.append(f"match_date >= DATE('{since_date}')")
     scope_sql = " OR ".join(scope_clauses) if scope_clauses else "TRUE"
+
+    age_sql = (
+        f"match_date >= DATE_SUB(CURRENT_DATE('UTC'), INTERVAL {int(max_age_days)} DAY)"
+        if max_age_days is not None else "TRUE"
+    )
 
     sql = f"""
     WITH completed AS (
@@ -239,7 +248,7 @@ def _matches_missing_events(
       GROUP BY match_id
     ),
     scoped AS (
-      SELECT * FROM completed WHERE {scope_sql}
+      SELECT * FROM completed WHERE ({scope_sql}) AND ({age_sql})
     ),
     have AS (
       SELECT DISTINCT match_id FROM {_ref()}
@@ -304,18 +313,20 @@ def ingest_missing(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict[str, int]:
     """Fetches /fixtures/events for completed matches still missing from raw_fixture_events.
 
-    See _matches_missing_events for scoping semantics (union of competition_ids and since_date).
+    See _matches_missing_events for scoping semantics.
     """
     ensure_table()
     targets = _matches_missing_events(
-        limit=limit, competition_ids=competition_ids, since_date=since_date,
+        limit=limit, competition_ids=competition_ids,
+        since_date=since_date, max_age_days=max_age_days,
     )
     logger.info(
-        "ingest_missing: %d match(es) need events (competition_ids=%s since_date=%s)",
-        len(targets), competition_ids, since_date,
+        "ingest_missing: %d match(es) need events (competition_ids=%s since_date=%s max_age_days=%s)",
+        len(targets), competition_ids, since_date, max_age_days,
     )
 
     api_calls = 0
@@ -366,11 +377,13 @@ def run(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict[str, object]:
     ensure_table()
     backfilled = backfill_from_legacy()
     ingest_stats = ingest_missing(
-        limit=limit, competition_ids=competition_ids, since_date=since_date,
+        limit=limit, competition_ids=competition_ids,
+        since_date=since_date, max_age_days=max_age_days,
     )
     return {
         "backfilled_rows": backfilled,
