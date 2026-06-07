@@ -20,13 +20,19 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
-from functools import lru_cache
 from typing import Literal
 
 from src.data.datamodel.catalog import fqn
 from src.tools.bigquery_tools import run_query
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache. We DO NOT use lru_cache here because a failed load (e.g.
+# transient BigQuery error or wrong column name) would poison the cache for the
+# entire process lifetime — every subsequent question would silently return
+# "team data unavailable". By caching manually, we only persist successful loads.
+_TEAMS_CACHE: tuple[dict, ...] | None = None
+_PLAYERS_CACHE: tuple[dict, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -89,9 +95,11 @@ _TEAM_ALIASES: dict[str, str] = {
 }
 
 
-@lru_cache(maxsize=1)
 def _load_teams() -> tuple[dict, ...]:
-    """Load all teams from dim_team once per process."""
+    """Load all teams from dim_team. Only successful loads are cached."""
+    global _TEAMS_CACHE
+    if _TEAMS_CACHE is not None:
+        return _TEAMS_CACHE
     sql = f"SELECT team_id, team_name, is_wc2026_participant FROM {fqn('dim_team')}"
     try:
         df = run_query(sql)
@@ -106,7 +114,10 @@ def _load_teams() -> tuple[dict, ...]:
             "is_wc2026_participant": bool(r.get("is_wc2026_participant") or False),
             "_norm_name": _norm(r.get("team_name") or ""),
         })
-    return tuple(rows)
+    result = tuple(rows)
+    if result:
+        _TEAMS_CACHE = result
+    return result
 
 
 def resolve_team(name: str) -> ResolvedEntity:
@@ -180,9 +191,11 @@ def resolve_team(name: str) -> ResolvedEntity:
 # Player resolver
 # ─────────────────────────────────────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
 def _load_players() -> tuple[dict, ...]:
-    """Load all players from dim_player once per process."""
+    """Load all players from dim_player. Only successful loads are cached."""
+    global _PLAYERS_CACHE
+    if _PLAYERS_CACHE is not None:
+        return _PLAYERS_CACHE
     sql = f"""
         SELECT player_id, player_name, primary_team_id, primary_team_name, is_wc2026_participant
         FROM {fqn('dim_player')}
@@ -202,7 +215,10 @@ def _load_players() -> tuple[dict, ...]:
             "is_wc2026_participant": bool(r.get("is_wc2026_participant") or False),
             "_norm_name": _norm(r.get("player_name") or ""),
         })
-    return tuple(rows)
+    result = tuple(rows)
+    if result:
+        _PLAYERS_CACHE = result
+    return result
 
 
 def resolve_player(name: str) -> ResolvedEntity:
@@ -288,5 +304,6 @@ def resolve_player_tool(name: str) -> str:
 
 def clear_cache() -> None:
     """For tests / hot-reload."""
-    _load_teams.cache_clear()
-    _load_players.cache_clear()
+    global _TEAMS_CACHE, _PLAYERS_CACHE
+    _TEAMS_CACHE = None
+    _PLAYERS_CACHE = None
