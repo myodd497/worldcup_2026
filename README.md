@@ -20,23 +20,25 @@ A multi-agent AI system reachable via WhatsApp that answers questions about Worl
 │   → Twilio Webhook  /  Streamlit Chat  /  FastAPI                          │
 │   → LangGraph Orchestrator                                                 │
 │                                                                            │
-│ LangGraph runtime path (6-node pipeline)                                    │
-│   classify_intent  →  router (planner)  →  execute_agents  →  aggregate    │
-│                                           (1-3 agents in sequence)          │
-│   →  confidence  →  compose                                                │
+│ LangGraph runtime path (4-node pipeline)                                    │
+│   plan (gpt-4o)  →  execute (1-2 specialists)  →  verify (gpt-4o critic)   │
+│                  →  compose (gpt-4o-mini, WhatsApp-friendly)                │
 │                                                                            │
-│ Specialist agents (multi-agent fan-out per request)                        │
-│   news | sentiment | match_facts | prediction | bigquery | chat | rules    │
+│ Specialist agents                                                          │
+│   bigquery | prediction | news | sentiment | rules | chat                  │
 │                                                                            │
-│ compose node                                                               │
-│   - builds final response (WhatsApp / web)                                  │
-│   - appends confidence label + reason (when needed)                         │
-│   - persists session log via Docs Agent                                     │
+│ State-of-the-art BQ stack (the quality-critical path)                      │
+│   - entity_resolver (deterministic team/player → id)                       │
+│   - schema_retriever (top-K relevant tables only)                          │
+│   - sql_few_shots (retrieved Q→SQL examples)                                │
+│   - validate → dry-run + cost guard → execute → repair loop (max 2)         │
+│   - verifier_agent (LLM-as-judge) can trigger ONE repair attempt            │
 │                                                                            │
-│ Data and model layer                                                       │
-│   BigQuery (20 tables: 4 dims + 4 facts + 6 marts + 4 raw)                 │
-│   Catalog-driven agent discovery (datamodel/catalog.py)                     │
-│   MLflow + model artifacts                                                 │
+│ Conversation memory                                                        │
+│   ConversationMemory: rolling LLM summary + structured entity store        │
+│                                                                            │
+│ Data layer                                                                 │
+│   BigQuery (catalog-driven, see src/data/datamodel/catalog.py)             │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,65 +50,29 @@ The orchestrator state carries these fields:
 
 - `user_id: str`
 - `user_message: str`
-- `intent: str` — classified intent label
-- `selected_agent: str` — primary agent (for compose)
-- `selected_agents: list[str]` — 1–3 agents chosen by planner
-- `agent_outputs: dict[str, dict[str, Any]]` — per-agent structured results
-- `agent_payload: dict[str, Any]` — aggregated/synthesized primary payload
-- `confidence_score: float`
-- `confidence_label: str`
-- `confidence_reason: str`
+- `conversation_context: str` — rolling summary + entity store + last raw turns
+- `topic: str` — short noun phrase from the planner
+- `selected_agent: str` — primary agent for compose
+- `selected_agents: list[str]` — 1-2 agents chosen by planner
+- `needs_verifier: bool` — planner-set flag for the verifier step
+- `agent_outputs: dict[str, dict]` — per-agent structured results
+- `agent_payload: dict` — primary payload that flows to compose
+- `verifier_verdict: dict` — critic's findings (groundedness, issues, repair hint)
+- `confidence_score: float`, `confidence_label: str`, `confidence_reason: str`
 - `final_reply: str`
-- `messages: list` — full conversation history
 
-### Node Sequence
+### Node Sequence (4 nodes)
 
-1. **`classify_intent`**
-Classifies the user message into one of: `news`, `sentiment`, `data`, `prediction`, `chat`, `rules`.
-
-2. **`route_request`** (Planner)
-Calls the Planner Agent to select 1–3 specialist agents. Writes `selected_agents` and `selected_agent` (primary).
-
-3. **`execute_agents_node`**
-Runs all selected agents **sequentially**. Each agent returns structured payload:
-- `answer`
-- `confidence_score`
-- `confidence_reason`
-- `metadata` (with `data_source` field)
-
-Runners available:
-- `news` — `_run_news()`
-- `sentiment` — `_run_sentiment()`
-- `match_facts` — `_run_match_facts()` (API-Football + weather + web fallback)
-- `prediction` — `_run_prediction()`
-- `bigquery` — `_run_bigquery()` (catalog-driven function-calling)
-- `chat` — `_run_chat()` (LLM conversational fallback)
-- `rules` — `_run_rules()` (FIFA regulations lookup)
-
-4. **`aggregate_outputs_node`**
-When multiple agents ran, picks primary payload using priority ranking: `bigquery=3 > api=1 > other=0`. For multi-agent responses, synthesizes with an LLM prompt that prioritizes BigQuery-backed data.
-
-5. **`score_confidence`**
-Normalizes score into `[0.0, 1.0]` and labels:
-- `high` if score `>= 0.80`
-- `medium` if `0.55 <= score < 0.80`
-- `low` if score `< 0.55`
-
-6. **`compose_reply`**
-Uses the Result Composer Agent to produce final user response.
-For low confidence, includes reason and a refinement tip.
-Also logs the final response through Docs Agent.
+1. **`plan`** — one `gpt-4o` call returns `{agents, primary_agent, topic, needs_verifier, reason}`. Replaces the old classify + route two-step.
+2. **`execute`** — runs the selected specialists sequentially. Each returns `{answer, confidence_score, confidence_reason, metadata}`.
+3. **`verify`** — when `needs_verifier` is set and the primary is BigQuery, a `gpt-4o` critic scores groundedness and may request ONE structured repair from the BigQuery agent.
+4. **`compose`** — `gpt-4o-mini` formats the final WhatsApp-friendly reply with ⭐ confidence line and (for low confidence) a refinement tip.
 
 ### Edges
 
-The graph is a straight 6-node pipeline:
-
-- `classify_intent → route_request`
-- `route_request → execute_agents_node`
-- `execute_agents_node → aggregate_outputs_node`
-- `aggregate_outputs_node → score_confidence`
-- `score_confidence → compose_reply`
-- `compose_reply → END`
+```
+plan → execute → verify → compose → END
+```
 
 ---
 
@@ -176,7 +142,6 @@ worldcup_2026/
 ├── pyproject.toml
 ├── README.md
 ├── AGENT_SYSTEM_ANALYSIS.md
-├── DATA_CONTRACT.md
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml
@@ -192,23 +157,25 @@ worldcup_2026/
 │   │   ├── app.py                  # FastAPI webhook server
 │   │   ├── streamlit_app.py        # Streamlit chat UI (alternative)
 │   │   └── whatsapp_handler.py     # Twilio message handling
-│   ├── agents/                     # All agents (orchestrator + planner + 8 specialists)
-│   │   ├── __init__.py
-│   │   ├── orchestrator.py         # LangGraph pipeline (6-node, multi-agent)
-│   │   ├── planner_agent.py        # Agent selection (1–3 agents, keyword fallback)
-│   │   ├── result_composer_agent.py
-│   │   ├── bigquery_agent.py       # Catalog-driven function-calling BQ agent
-│   │   ├── match_facts_agent.py    # Cache-first fixtures/weather/referee
-│   │   ├── news_agent.py           # 5-provider fallback news search
-│   │   ├── sentiment_agent.py      # Twitter/VADER sentiment
-│   │   ├── prediction_agent.py     # Match outcome prediction (heuristic + planned ML)
-│   │   ├── rules_agent.py          # FIFA regulations Q&A (NEW)
-│   │   ├── docs_agent.py           # Session logging
-│   │   ├── code_review_agent.py    # Code lint + review
-│   │   └── workflow_logger.py      # Execution tracing (NEW)
+│   └── agents/                     # Orchestrator + planner + specialists
+│       ├── __init__.py
+│       ├── orchestrator.py         # LangGraph 4-node pipeline
+│       ├── planner_agent.py        # gpt-4o single-call router
+│       ├── conversation_memory.py  # Rolling summary + entity store
+│       ├── verifier_agent.py       # LLM-as-judge critic
+│       ├── result_composer_agent.py
+│       ├── bigquery_agent.py       # Retrieval-driven SQL agent (gpt-4o)
+│       ├── sql_few_shots.py        # Q→SQL example library
+│       ├── news_agent.py
+│       ├── sentiment_agent.py
+│       ├── prediction_agent.py     # BQ-only heuristic + planned ML
+│       ├── rules_agent.py
+│       ├── docs_agent.py
+│       ├── code_review_agent.py
+│       └── workflow_logger.py
 │   ├── tools/                      # Reusable tool functions for agents
 │   │   ├── __init__.py
-│   │   ├── api_football.py         # RapidAPI API-Football client
+│   │   ├── entity_resolver.py       # Deterministic team/player resolution
 │   │   ├── weather.py              # OpenWeatherMap client
 │   │   ├── news_search.py          # Multi-provider news search
 │   │   ├── twitter_sentiment.py    # Twitter/X sentiment
@@ -258,13 +225,13 @@ worldcup_2026/
 | Day | Scope | Status |
 |-----|-------|--------|
 | 1–2 | Infrastructure: `pyproject.toml`, `Dockerfile`, `docker-compose.yml`, BQ dataset, service account, `.env.example` | ✅ Complete |
-| 3–4 | Tools layer: `api_football.py`, `weather.py`, `news_search.py`, `twitter_sentiment.py`, `bigquery_tools.py`, `datamodel_tools.py`, `api_usage_tracker.py` | ✅ Complete |
+| 3–4 | Tools layer: `weather.py`, `news_search.py`, `twitter_sentiment.py`, `bigquery_tools.py`, `datamodel_tools.py`, `entity_resolver.py`, `api_usage_tracker.py` | ✅ Complete |
 | 3–4 | Data model: 20-table catalog (4 dims + 4 facts + 6 marts + 4 raw), `catalog.py`, `build_datamodel.py`, `startup_etl.py` | ✅ Complete |
-| 5–6 | Specialist agents: `news_agent`, `sentiment_agent`, `match_facts_agent`, `bigquery_agent`, `prediction_agent`, `docs_agent`, `code_review_agent` | ✅ Complete |
+| 5–6 | Specialist agents: `news_agent`, `sentiment_agent`, `bigquery_agent`, `prediction_agent`, `rules_agent`, `docs_agent`, `code_review_agent`, `verifier_agent` | ✅ Complete |
 | 5–6 (extra) | New: `rules_agent.py` — FIFA regulations Q&A from official document | ✅ Complete |
 | 5–6 (extra) | New: `planner_agent.py` — agent selection with keyword fallback | ✅ Complete |
 | 5–6 (extra) | New: `workflow_logger.py` — execution tracing | ✅ Complete |
-| 9 | Orchestrator: 6-node LangGraph pipeline with multi-agent execution | ✅ Complete |
+| 9 | Orchestrator: 4-node LangGraph pipeline (plan / execute / verify / compose) with rolling-summary memory and verifier-driven repair | ✅ Complete |
 | 9 | Server: `app.py` (FastAPI), `streamlit_app.py` (web UI), `whatsapp_handler.py` (Twilio) | ✅ Complete |
 
 ### ⚠️ In Progress / Partial
@@ -284,7 +251,6 @@ worldcup_2026/
 | 11 | Cloud Run deployment (`deploy_cloud_run.sh`) | 🟡 High |
 | 11 | Production Twilio webhook + smoke test | 🟡 High |
 | 7–8 | Real XGBoost model training (replaces heuristic) | 🟢 Med |
-| — | `match_facts_agent` not in planner's `AVAILABLE_AGENTS` — dead code path (see `AGENT_SYSTEM_ANALYSIS.md` for fix) | 🔴 Critical |
 
 ---
 
@@ -325,7 +291,7 @@ BIGQUERY_DATASET_ID=worldcup2026
 ## Key Design Decisions
 
 ### Why LangGraph over CrewAI / AutoGen?
-LangGraph gives explicit control over agent state and message routing — critical when WhatsApp sessions must be stateful across multiple turns. CrewAI is higher-level but less controllable for production webhook flows. The current 6-node pipeline (`classify → route → execute → aggregate → confidence → compose`) provides full observability.
+LangGraph gives explicit control over agent state and message routing — critical when WhatsApp sessions must be stateful across multiple turns. CrewAI is higher-level but less controllable for production webhook flows. The current 4-node pipeline (`plan → execute → verify → compose`) provides full observability and a verifier-driven repair loop.
 
 ### Why a Planner Agent separate from the Orchestrator?
 The Planner (`planner_agent.py`) handles agent selection with a structured JSON contract and keyword-based fallback. Separating this from the orchestrator keeps each component focused: the orchestrator manages state flow, the planner decides **who** to call. This also makes the planner independently testable.
@@ -334,7 +300,7 @@ The Planner (`planner_agent.py`) handles agent selection with a structured JSON 
 The BQ agent discovers tables dynamically via `catalog.py` (`list_tables → describe_table → sample_table → run_sql → format`). No table names are hardcoded. This makes the system self-documenting, adaptable to schema changes, and enforces read-only access via table allow-listing in `datamodel_tools.py`.
 
 ### Why cache-first for API calls?
-`match_facts_agent` and `prediction_agent` use BQ → API → web → LLM fallback chains. This minimizes API costs, reduces latency, and ensures the BQ gold model is the primary data source. External APIs are fallbacks, not the default.
+`prediction_agent` reads exclusively from BigQuery (the gold model is the single source of truth at runtime). Live API ingestion is owned by the ETL scheduler, not the chat path.
 
 ### Why XGBoost over a pure LLM for predictions?
 LLMs hallucinate probabilities. A trained XGBoost on historical match data (ELO ratings, FIFA rankings, form, H2H records, tournament stage) gives calibrated probabilities. The LLM then **explains** those probabilities in natural language. Currently the heuristic provides directional guidance while the XGBoost model is being trained.
