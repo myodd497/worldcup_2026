@@ -402,12 +402,13 @@ def _build_world_cup_css() -> str:
 /* ── Full-page background with the World Cup trophy image ── */
 [data-testid="stAppViewContainer"] {{
     background:
-        linear-gradient(180deg, rgba(10, 31, 46, 0.92) 0%, rgba(13, 43, 62, 0.88) 40%, rgba(15, 26, 46, 0.92) 100%),
+        linear-gradient(180deg, rgba(10, 31, 46, 0.55) 0%, rgba(13, 43, 62, 0.50) 40%, rgba(15, 26, 46, 0.55) 100%),
         url("{bg_uri}");
-    background-size: cover;
+    background-size: contain;
     background-position: center center;
     background-repeat: no-repeat;
     background-attachment: fixed;
+}}
 }}
 
 /* Hide the ::before trophy emoji since we have the real image */
@@ -524,6 +525,72 @@ h1 {{
     color: #aaa;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+}}
+
+/* ── Next Match card (sidebar) ── */
+.next-match-card {{
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.6) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.2);
+    border-radius: 14px;
+    padding: 14px 12px;
+    margin: 8px 0;
+    text-align: center;
+}}
+.next-match-countdown {{
+    font-size: 1.8em;
+    font-weight: 800;
+    color: #f0c040;
+    line-height: 1.2;
+}}
+.next-match-countdown-sub {{
+    font-size: 0.75em;
+    color: #888;
+    margin-bottom: 10px;
+}}
+.next-match-teams {{
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 8px;
+    margin: 10px 0;
+}}
+.next-match-team {{
+    flex: 1;
+    text-align: center;
+}}
+.next-match-flag {{
+    font-size: 1.6em;
+    display: block;
+}}
+.next-match-name {{
+    font-size: 0.85em;
+    font-weight: 700;
+    color: #e0e0e0;
+    display: block;
+    margin-top: 2px;
+}}
+.next-match-players {{
+    margin-top: 4px;
+    color: #ccc;
+}}
+.next-match-vs {{
+    font-size: 0.7em;
+    font-weight: 700;
+    color: rgba(255, 215, 0, 0.5);
+    align-self: center;
+    padding-top: 6px;
+}}
+.next-match-meta {{
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    text-align: left;
+    font-size: 0.75em;
+    color: #aaa;
+    line-height: 1.6;
+}}
+.next-match-meta-row {{
+    padding: 1px 0;
 }}
 
 /* ── Star confidence ratings ── */
@@ -906,5 +973,225 @@ def inject_player_images(text: str) -> str:
             f'onerror="this.style.display=\'none\'">'
             f'{matched_text}</span>'
         )
+
+    return pattern.sub(_replacement, text)
+
+
+# ---------------------------------------------------------------------------
+# Next Match widget — queries BigQuery for the upcoming WC2026 match
+# ---------------------------------------------------------------------------
+
+_next_match_cache: dict | None = None
+_next_match_cache_ts: float = 0.0
+
+
+def get_next_match_html() -> str:
+    """Query BigQuery for the next upcoming World Cup 2026 match and return
+    a styled HTML card with countdown, teams, venue, referee, and top players.
+
+    Cached for 60 seconds to avoid hitting BigQuery on every Streamlit rerun.
+    """
+    global _next_match_cache, _next_match_cache_ts
+    import time as _time
+
+    now = _time.time()
+    if _next_match_cache is not None and (now - _next_match_cache_ts) < 60:
+        data = _next_match_cache
+    else:
+        data = _fetch_next_match_from_bq()
+        _next_match_cache = data
+        _next_match_cache_ts = now
+
+    if data is None:
+        return _no_match_fallback_html()
+
+    return _build_next_match_card(data)
+
+
+def _fetch_next_match_from_bq() -> dict | None:
+    """Fetch the next WC2026 match from BigQuery fact_match table."""
+    try:
+        from src.tools.bigquery_tools import run_query
+
+        project = os.environ.get("BIGQUERY_PROJECT_ID")
+        dataset = os.environ.get("BIGQUERY_DATASET_ID")
+        if not project or not dataset:
+            return None
+
+        # 1. Get the next match
+        match_sql = f"""
+            SELECT
+                match_id, match_date, kickoff_at,
+                home_team_name, away_team_name,
+                venue_name, venue_city, referee_name,
+                match_status, competition_round
+            FROM `{project}.{dataset}.fact_match`
+            WHERE competition_id = 1
+              AND season_year = 2026
+              AND match_status IN ('SCHEDULED', 'LIVE')
+            ORDER BY kickoff_at ASC
+            LIMIT 1
+        """
+        df = run_query(match_sql)
+        if df.empty:
+            return None
+
+        row = df.iloc[0]
+        home_team = str(row.get("home_team_name", ""))
+        away_team = str(row.get("away_team_name", ""))
+        home_flag = get_flag(home_team) or ""
+        away_flag = get_flag(away_team) or ""
+
+        result: dict = {
+            "match_id": int(row.get("match_id", 0)),
+            "match_date": str(row.get("match_date", "")),
+            "kickoff_at": str(row.get("kickoff_at", "")),
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_flag": home_flag,
+            "away_flag": away_flag,
+            "venue_name": str(row.get("venue_name", "")),
+            "venue_city": str(row.get("venue_city", "")),
+            "referee_name": str(row.get("referee_name", "")),
+            "match_status": str(row.get("match_status", "SCHEDULED")),
+            "competition_round": str(row.get("competition_round", "")),
+            "home_players": [],
+            "away_players": [],
+        }
+
+        # 2. Get top 2 players per team from fact_player_match_stat
+        players_sql = f"""
+            WITH ranked AS (
+                SELECT
+                    fps.team_id, fps.player_id,
+                    dp.player_name, dt.team_name,
+                    SUM(fps.goal_contributions) AS total_gc,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY fps.team_id
+                        ORDER BY SUM(fps.goal_contributions) DESC
+                    ) AS rn
+                FROM `{project}.{dataset}.fact_player_match_stat` fps
+                JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+                JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
+                WHERE fps.competition_id = 1
+                  AND fps.season_year = 2026
+                  AND (LOWER(dt.team_name) = LOWER('{home_team.replace("'", "''")}')
+                       OR LOWER(dt.team_name) = LOWER('{away_team.replace("'", "''")}'))
+                GROUP BY fps.team_id, fps.player_id, dp.player_name, dt.team_name
+            )
+            SELECT team_name, player_name, total_gc, rn
+            FROM ranked
+            WHERE rn <= 2
+            ORDER BY team_name, rn
+        """
+        try:
+            pdf = run_query(players_sql)
+            if not pdf.empty:
+                for _, prow in pdf.iterrows():
+                    tname = str(prow.get("team_name", "")).lower()
+                    pname = str(prow.get("player_name", ""))
+                    if tname == home_team.lower():
+                        result["home_players"].append(pname)
+                    elif tname == away_team.lower():
+                        result["away_players"].append(pname)
+        except Exception:
+            pass  # Best-effort; card still looks good without players
+
+        return result
+    except Exception:
+        return None
+
+
+def _build_next_match_card(data: dict) -> str:
+    """Build the HTML card for the next World Cup match."""
+    # Parse kickoff time for countdown
+    kickoff_str = data.get("kickoff_at", "")
+    match_date_str = data.get("match_date", "")
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        kt = _dt.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+        now_utc = _dt.now(_tz.utc)
+        delta = kt - now_utc
+        if delta.total_seconds() < 0:
+            countdown_text = "⚡ LIVE NOW!"
+            countdown_sub = ""
+        else:
+            days = delta.days
+            hours = delta.seconds // 3600
+            minutes = (delta.seconds % 3600) // 60
+            parts = []
+            if days > 0:
+                parts.append(f"{days}d")
+            if hours > 0 or days > 0:
+                parts.append(f"{hours}h")
+            parts.append(f"{minutes}m")
+            countdown_text = " ".join(parts)
+            countdown_sub = "until kick-off"
+    except Exception:
+        countdown_text = match_date_str[:10] if match_date_str else "TBD"
+        countdown_sub = ""
+
+    home_flag = data.get("home_flag", "")
+    away_flag = data.get("away_flag", "")
+    home_team = data["home_team"]
+    away_team = data["away_team"]
+    venue = data.get("venue_name", "TBD")
+    city = data.get("venue_city", "")
+    venue_full = f"{venue}, {city}" if city else venue
+    referee = data.get("referee_name", "TBD")
+    round_label = data.get("competition_round", "")
+
+    # Build player sections
+    def _player_row(players: list[str]) -> str:
+        if not players:
+            return '<span style="color:#888;font-size:0.8em;">TBA</span>'
+        return " &nbsp;·&nbsp; ".join(
+            f'<span style="font-size:0.85em;">⭐ {p}</span>' for p in players
+        )
+
+    home_players_html = _player_row(data.get("home_players", []))
+    away_players_html = _player_row(data.get("away_players", []))
+
+    round_line = f'<div style="font-size:0.75em;color:#aaa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">{round_label}</div>' if round_label else ""
+
+    return f"""
+<div class="next-match-card">
+    {round_line}
+    <div class="next-match-countdown">{countdown_text}</div>
+    <div class="next-match-countdown-sub">{countdown_sub}</div>
+
+    <div class="next-match-teams">
+        <div class="next-match-team">
+            <span class="next-match-flag">{home_flag}</span>
+            <span class="next-match-name">{home_team}</span>
+            <div class="next-match-players">{home_players_html}</div>
+        </div>
+        <div class="next-match-vs">VS</div>
+        <div class="next-match-team">
+            <span class="next-match-flag">{away_flag}</span>
+            <span class="next-match-name">{away_team}</span>
+            <div class="next-match-players">{away_players_html}</div>
+        </div>
+    </div>
+
+    <div class="next-match-meta">
+        <div class="next-match-meta-row">📅 {match_date_str[:10] if match_date_str else 'TBD'}</div>
+        <div class="next-match-meta-row">🏟️ {venue_full}</div>
+        <div class="next-match-meta-row">🦓 {referee}</div>
+    </div>
+</div>
+"""
+
+
+def _no_match_fallback_html() -> str:
+    """Fallback when no upcoming match is found."""
+    return """
+<div class="next-match-card">
+    <div style="text-align:center;color:#aaa;padding:16px;">
+        🏟️ No upcoming match found.<br>
+        <small>Check back soon for the full schedule.</small>
+    </div>
+</div>
+"""
 
     return pattern.sub(_replacement, text)

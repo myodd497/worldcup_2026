@@ -29,6 +29,7 @@ from src.server.worldcup_style import (
     confidence_stars_html,
     inject_flag_emojis,
     inject_player_images,
+    get_next_match_html,
     agent_emoji,
 )
 from src.tools.bigquery_tools import run_query
@@ -157,18 +158,8 @@ with st.sidebar:
     st.session_state.user_id = st.text_input("User ID", value=st.session_state.user_id)
 
     st.divider()
-    st.subheader("🤖 Active Agents")
-    agents_info = [
-        ("📊 BigQuery", "Structured data, fixtures, results"),
-        ("📰 News", "Latest headlines & updates"),
-        ("💬 Sentiment", "Fan & social opinion"),
-        ("🔮 Prediction", "Match forecasts & odds"),
-        ("⚽ Match Facts", "Lineups, venue, weather"),
-        ("📋 Rules", "FIFA regulations & format"),
-    ]
-    for name, desc in agents_info:
-        st.markdown(f'<div class="agent-badge">{name}</div> <small style="color:#aaa;">{desc}</small>', unsafe_allow_html=True)
-        st.caption("")
+    st.subheader("⚽ Next Match")
+    st.markdown(get_next_match_html(), unsafe_allow_html=True)
 
     st.divider()
     st.subheader("📡 ETL Status")
