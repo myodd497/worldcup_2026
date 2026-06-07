@@ -35,38 +35,6 @@ def test_sentiment_agent(mock_sentiment):
     assert "100" in result
 
 
-# ── Match Facts Agent ────────────────────────────────────────────────────────
-
-@patch("src.agents.match_facts_agent._llm_format_fixtures_answer")
-@patch("src.agents.match_facts_agent.get_fixtures_cache_first")
-@patch("src.tools.weather.get_venue_weather")
-def test_match_facts_agent(mock_weather, mock_fixtures, mock_format):
-    mock_fixtures.return_value = (
-        [
-            {
-                "fixture_id": 1,
-                "home_team": "Portugal",
-                "away_team": "Morocco",
-                "date": "2026-06-15T18:00:00",
-                "venue": "MetLife Stadium",
-                "venue_city": "New York",
-                "referee": "Howard Webb",
-                "home_goals": None,
-                "away_goals": None,
-                "status": "NS",
-                "season": 2026,
-            }
-        ],
-        "bigquery",
-    )
-    mock_format.return_value = "Portugal vs Morocco at MetLife Stadium"
-    mock_weather.return_value = {"description": "Sunny", "temp_c": 24.0}
-    from src.agents.match_facts_agent import run
-    result = run("Portugal")
-    assert "Portugal" in result
-    assert "MetLife Stadium" in result
-
-
 # ── Prediction Agent ─────────────────────────────────────────────────────────
 
 @patch("src.models.predict.predict_match")
@@ -108,31 +76,37 @@ def test_bigquery_agent_head_to_head_last_result_and_stats_uses_deterministic_pl
 
 # ── Planner Agent ────────────────────────────────────────────────────────────
 
-@patch("src.agents.planner_agent._llm")
-def test_planner_agent_selects_bigquery(mock_llm):
+@patch("src.agents.planner_agent._get_llm")
+def test_planner_agent_selects_bigquery(mock_get_llm):
+    mock_llm = MagicMock()
     mock_llm.invoke.return_value = MagicMock(
         content=(
-            '{"agents": ["bigquery", "match_facts"], '
-            '"response_mode": "multi", '
-            '"reason": "Needs structured warehouse data", '
-            '"primary_agent": "bigquery"}'
+            '{"agents": ["bigquery"], '
+            '"primary_agent": "bigquery", '
+            '"topic": "countdown", '
+            '"needs_verifier": true, '
+            '"reason": "Needs structured warehouse data"}'
         )
     )
+    mock_get_llm.return_value = mock_llm
 
     from src.agents.planner_agent import plan_response
 
-    plan = plan_response("how many days until the world cup?", [])
+    plan = plan_response("how many days until the world cup?", conversation_context="None")
     assert plan["primary_agent"] == "bigquery"
     assert "bigquery" in plan["agents"]
+    assert plan["needs_verifier"] is True
 
 
-@patch("src.agents.planner_agent._llm")
-def test_planner_agent_falls_back_to_bigquery_for_temporal_queries(mock_llm):
+@patch("src.agents.planner_agent._get_llm")
+def test_planner_agent_falls_back_to_bigquery_for_temporal_queries(mock_get_llm):
+    mock_llm = MagicMock()
     mock_llm.invoke.side_effect = Exception("planner unavailable")
+    mock_get_llm.return_value = mock_llm
 
     from src.agents.planner_agent import plan_response
 
-    plan = plan_response("how many days until the world cup?", [])
+    plan = plan_response("how many days until the world cup?", conversation_context="None")
     assert "bigquery" in plan["agents"]
     assert plan["primary_agent"] == "bigquery"
 
