@@ -5,6 +5,22 @@
 
 ---
 
+## ⚠️ Current Critical Risks (June 7, 2026)
+
+| # | Risk | Severity | Detail |
+|---|------|----------|--------|
+| **R1** | `match_facts_agent` is unreachable | 🔴 Critical | Exists in orchestrator's `runners` dict but missing from planner's `AVAILABLE_AGENTS`. All match-specific queries (lineups, venue, referee, weather) route to BQ instead, which lacks live API data. One-line fix pending. |
+| **R2** | Regulations file is empty (0 bytes) | 🔴 Critical | `Docs/FWC26_regulations_EN.txt` exists but contains no text. The rules agent returns confidence 0.1 for all queries. Non-functional until populated. |
+| **R3** | No player-level data model | 🔴 Critical | No `dim_player`, `fact_player_match_stat`, `fact_lineup`, or `mart_player_form`. ~40% of target questions are impossible. |
+| **R4** | No live data freshness pipeline | 🟡 High | No cron/scheduler for API-Football polling during matches. Users querying during live games get stale BQ data or nothing. |
+| **R5** | Twitter/X sentiment API likely broken | 🟡 High | Twitter API v2 free tier is severely restricted. The `twitter_sentiment.py` tool will likely return 0 tweets. |
+| **R6** | Prediction model is heuristic-only | 🟡 High | Trained XGBoost model path (`bin/models_deployed/wc2026_predictor.pkl`) returns uniform 33/33/33 fallback. No real ML model deployed. |
+| **R7** | Redundant planner prompts | 🟢 Med | `orchestrator.py` defines `_AGENT_PLANNER_PROMPT` (unused) AND calls `planner_agent.py`. Two LLM call path for the same routing decision (`classify_intent` + `route_request`). |
+| **R8** | DATA_CONTRACT.md is stale | 🟢 Med | References gold views (`v_team_recent_form`, `v_head_to_head`) that don't exist. Actual implementation uses marts. `dim_referee` mentioned but not in catalog. |
+| **R9** | No streaming — users wait 15-30s | 🟡 High | 6-node pipeline blocks until complete. For live-game companion, this is a UX killer. |
+
+---
+
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
@@ -628,9 +644,9 @@ Below is the prioritized list of improvements to take this app from its current 
 
 ## 8. Progress Scorecard
 
-### Current Score: **47/100** ⬆️ (+5 from previous analysis)
+### Current Score: **47/100**
 
-The foundation is solid — the orchestrator, BQ agent, catalog system, guardrails, and workflow logger are well-designed. The new rules agent (P1.2 prerequisite) and planner improvements have raised the baseline. But the app can only answer ~35% of the target questions today (up from 30%). The biggest remaining gaps are the empty regulations file, missing player data, missing match_facts routing, and no live data freshness.
+The foundation is solid — the orchestrator, BQ agent, catalog system, guardrails, and workflow logger are well-designed. The new rules agent and planner improvements have raised the baseline. But the app can only answer ~35% of the target questions today. The biggest remaining gaps are: empty regulations file, missing player data, missing match_facts routing, and no live data freshness.
 
 ### Improvement Contribution to 100%
 
@@ -643,10 +659,10 @@ The foundation is solid — the orchestrator, BQ agent, catalog system, guardrai
 | P1.4 | fact_lineup | 69 | **75** | +6 |
 | P1.5 | mart_player_form | 75 | **79** | +4 |
 | P1.6 | Streaming orchestrator | 79 | **82** | +3 |
-| P1.7 | Add minutes_played via API-Football player endpoint | 82 | **85** | +3 |
+| P1.7 | Add minutes_played via API-Football | 82 | **85** | +3 |
 | P1.8 | Live API fallback for match_facts | 85 | **87** | +2 |
 | P1.9 | Eliminate redundant classification | 87 | **88** | +1 |
-| P2.1 | Pre-match summary agent | 86 | **93** | +7 |
+| P2.1 | Pre-match summary agent | 88 | **93** | +5 |
 | P2.2 | Live polling cron (5-min) | 93 | **95** | +2 |
 | P2.3 | dim_coach | 95 | **97** | +2 |
 | P2.4 | Substitution analysis | 97 | **99** | +2 |
@@ -662,33 +678,23 @@ Question Type                         Current    Target
 Fixtures / Schedule                    ✅ 85%     100%
 Team Form / Stats                      ✅ 90%     100%
 Standings                              ✅ 85%     100%
-Head-to-Head                           ✅ 90%     100%
-Predictions                            ⚠️ 55%      95%
-News / Media                           ✅ 75%      95%
-Sentiment                              ❌ 15%      70%
-Rules / Regulations                    ❌  5%*     95%   (* empty file)
-Lineups / Referees                     ❌ 15%      95%
-Player Stats                           ❌  5%      95%
-Live / In-Play Data                    ❌  5%      95%
-Pre-Match Summary                      ❌  5%      95%
-Coach / Tactical                       ❌  0%      90%
-Weather at Venue                       ⚠️ 50%*     95%   (* not routable)
-```
-H2H Records                            ✅ 80%     100%
+Head-to-Head Records                   ✅ 80%     100%
 Match Events (goals, cards)            ⚠️ 60%      95%
 Venue / Stadium Info                   ⚠️ 50%      95%
 Weather at Venue                       ⚠️ 30%      90%
 Referee Info                           ⚠️ 35%      90%
+Predictions (model)                    ⚠️ 40%      90%
+News                                   ⚠️ 55%      80%
+Sentiment                              ⚠️ 20%      60%
+Rules / Regulations                    ❌  5%*     95%   (* empty file)
 Lineups                                ❌  0%      95%
 Player Stats (per game)                ❌  0%      95%
 Player Form (last N games)             ❌  0%      95%
 Player to Watch / Key Players          ❌  0%      90%
 Substitution Analysis                  ❌  0%      85%
 Pre-Match Summary                      ❌  5%      95%
-Predictions (model)                    ⚠️ 40%      90%
 Odds                                   ❌  0%      85%
-News                                   ⚠️ 55%      80%
-Sentiment                              ⚠️ 20%      60%
+Coach / Tactical                       ❌  0%      90%
 ─────────────────────────────────────────────────────────
 OVERALL                                42%       100%
 ```
@@ -699,6 +705,17 @@ OVERALL                                42%       100%
 
 The architecture is **well-designed at its core** — the catalog-driven BQ agent, the read-only guardrails, the planner+orchestrator pattern, and the cache-first API strategy are all solid decisions. The problem is **what's missing**, not what's broken.
 
-The single biggest unlock is **player-level data** (`dim_player`, `fact_player_match_stat`, `fact_lineup`, `mart_player_form`). Adding these four tables would raise the score from 42 to 70. The next biggest unlock is **live data freshness** (5-min polling cron + match_facts routing fix), taking it to 88. A pre-match summary agent (+ streaming) takes it to 93+. At that point, the app genuinely serves the "fan watching a game" use case.
+**Current score: 47/100** — the app answers ~35% of target questions today.
 
-The quickest win? **P1.1** — add `"match_facts"` to `planner_agent.py:AVAILABLE_AGENTS`. One line. Unlocks live fixture fallback, weather, and web-enhanced match answers immediately.
+The single biggest unlock is **player-level data** (`dim_player`, `fact_player_match_stat`, `fact_lineup`, `mart_player_form`). Adding these four tables would raise the score from 47 to 79. The next biggest unlock is **live data freshness** (5-min polling cron + match_facts routing fix), taking it to 88. A pre-match summary agent (+ streaming) takes it to 93+. At that point, the app genuinely serves the "fan watching a game" use case.
+
+### Quickest Wins (do today)
+
+1. **P1.1** — Add `"match_facts"` to `planner_agent.py:AVAILABLE_AGENTS`. One line. Unlocks live fixture fallback, weather, and web-enhanced match answers immediately. (+6 points)
+2. **P1.2** — Populate `Docs/FWC26_regulations_EN.txt` with actual FIFA regulations text. The rules agent is fully implemented and waiting. (+4 points)
+
+### Top 3 Risks to Monitor
+
+1. **R1**: `match_facts_agent` unreachable — all match queries silently fall to BQ
+2. **R2**: Rules agent non-functional (empty regulations file)
+3. **R3**: No player data model — 40% of target questions impossible
