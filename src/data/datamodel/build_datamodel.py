@@ -41,10 +41,13 @@ Run modes:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import sys
 import time
-from datetime import date, timedelta, timezone
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from src.tools.api_usage_tracker import get_api_usage_snapshot, reset_api_usage
@@ -142,7 +145,10 @@ def _build_raw_steps(
     return [
         (
             "raw_fixtures",
-            lambda: raw_fixtures.run(skip_team_fetch=skip_team_fetch),
+            lambda: raw_fixtures.run(
+                skip_team_fetch=skip_team_fetch,
+                since_date=since_date,
+            ),
         ),
         (
             "raw_fixture_events",
@@ -262,6 +268,71 @@ def run(*, skip_raw: bool = False, only_marts: bool = False) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# etl_run_status writer (used by both CLI and FastAPI startup paths)
+# ---------------------------------------------------------------------------
+
+def _detect_trigger() -> str:
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        return "github_action"
+    return "manual"
+
+
+def _record_status(
+    *,
+    run_id: str,
+    trigger: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    duration_s: float,
+    error_message: str | None = None,
+) -> None:
+    """Best-effort write of a status row to etl_run_status. Never raises."""
+    try:
+        from google.cloud import bigquery
+
+        client = _bq_tools._client()
+        table_ref = _etl_status_fqn()
+        client.query(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table_ref} (
+                run_id STRING,
+                trigger STRING,
+                status STRING,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                duration_s FLOAT64,
+                error_message STRING,
+                created_at TIMESTAMP
+            )
+            """
+        ).result()
+
+        error_value = "NULL"
+        if error_message:
+            safe = error_message.replace("\\", "\\\\").replace("'", "''")
+            error_value = f"'{safe[:4000]}'"
+
+        client.query(
+            f"""
+            INSERT INTO {table_ref}
+                (run_id, trigger, status, started_at, finished_at, duration_s, error_message, created_at)
+            VALUES
+                ('{run_id}', '{trigger}', '{status}',
+                 TIMESTAMP('{started_at.isoformat()}'),
+                 TIMESTAMP('{finished_at.isoformat()}'),
+                 {float(duration_s)}, {error_value}, CURRENT_TIMESTAMP())
+            """
+        ).result()
+    except Exception as exc:  # pragma: no cover - observability only
+        logger.warning("Could not write ETL status row: %s", exc)
+
+
+def _failed_steps(result: dict) -> list[str]:
+    return [s["step"] for s in result.get("steps", []) if s.get("error")]
+
+
 def _print_summary(result: dict) -> None:
     print("=" * 60)
     print("DATAMODEL BUILD SUMMARY")
@@ -291,8 +362,39 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    result = run(skip_raw=args.skip_raw, only_marts=args.only_marts)
-    _print_summary(result)
+
+    run_id = str(uuid.uuid4())
+    trigger = _detect_trigger()
+    started_at = datetime.now(timezone.utc)
+    sha = os.getenv("GITHUB_SHA", "local")
+    logger.info("build_datamodel start run_id=%s trigger=%s sha=%s", run_id, trigger, sha[:12])
+
+    status = "SUCCESS"
+    error_message: str | None = None
+    result: dict = {"steps": []}
+    try:
+        result = run(skip_raw=args.skip_raw, only_marts=args.only_marts)
+        failed = _failed_steps(result)
+        if failed:
+            status = "PARTIAL_FAILURE"
+            error_message = f"Failed steps: {', '.join(failed)}"
+    except Exception as exc:
+        status = "FAILED"
+        error_message = f"{type(exc).__name__}: {exc}"
+        logger.exception("build_datamodel crashed")
+    finally:
+        finished_at = datetime.now(timezone.utc)
+        duration_s = round((finished_at - started_at).total_seconds(), 2)
+        _record_status(
+            run_id=run_id, trigger=trigger, status=status,
+            started_at=started_at, finished_at=finished_at,
+            duration_s=duration_s, error_message=error_message,
+        )
+        _print_summary(result)
+        print(f"run_id={run_id} trigger={trigger} status={status}")
+
+    if status != "SUCCESS":
+        sys.exit(1)
 
 
 if __name__ == "__main__":
