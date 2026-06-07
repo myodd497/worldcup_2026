@@ -12,29 +12,31 @@ A multi-agent AI system reachable via WhatsApp that answers questions about Worl
 
 ## System Architecture
 
-## v2 Architecture (Router + Confidence + Result Composer)
+## v2 Architecture (Multi-Agent + Confidence + Result Composer)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ USER (WhatsApp)                                                            │
-│   → Twilio Webhook                                                         │
-│   → FastAPI /webhook                                                       │
+│ USER (WhatsApp / Streamlit / Web)                                          │
+│   → Twilio Webhook  /  Streamlit Chat  /  FastAPI                          │
 │   → LangGraph Orchestrator                                                 │
 │                                                                            │
-│ LangGraph runtime path                                                     │
-│   classify_intent  →  router  →  specialist_agent  →  confidence  → compose│
+│ LangGraph runtime path (6-node pipeline)                                    │
+│   classify_intent  →  router (planner)  →  execute_agents  →  aggregate    │
+│                                           (1-3 agents in sequence)          │
+│   →  confidence  →  compose                                                │
 │                                                                            │
-│ Specialist agents (single selected route per request)                      │
-│   news | sentiment | match_facts | prediction | other                      │
+│ Specialist agents (multi-agent fan-out per request)                        │
+│   news | sentiment | match_facts | prediction | bigquery | chat | rules    │
 │                                                                            │
-│ compose node                                                                │
-│   - builds final WhatsApp response                                          │
+│ compose node                                                               │
+│   - builds final response (WhatsApp / web)                                  │
 │   - appends confidence label + reason (when needed)                         │
 │   - persists session log via Docs Agent                                     │
 │                                                                            │
-│ Data and model layer                                                        │
-│   BigQuery (raw + curated + analytical tables)                              │
-│   MLflow + model artifacts                                                  │
+│ Data and model layer                                                       │
+│   BigQuery (20 tables: 4 dims + 4 facts + 6 marts + 4 raw)                 │
+│   Catalog-driven agent discovery (datamodel/catalog.py)                     │
+│   MLflow + model artifacts                                                 │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -42,61 +44,69 @@ A multi-agent AI system reachable via WhatsApp that answers questions about Worl
 
 ### State Fields
 
-The orchestrator state now carries these fields:
+The orchestrator state carries these fields:
 
 - `user_id: str`
 - `user_message: str`
-- `intent: str`
-- `selected_agent: str`
-- `agent_payload: dict[str, Any]`
+- `intent: str` — classified intent label
+- `selected_agent: str` — primary agent (for compose)
+- `selected_agents: list[str]` — 1–3 agents chosen by planner
+- `agent_outputs: dict[str, dict[str, Any]]` — per-agent structured results
+- `agent_payload: dict[str, Any]` — aggregated/synthesized primary payload
 - `confidence_score: float`
 - `confidence_label: str`
 - `confidence_reason: str`
 - `final_reply: str`
-- `messages: list`
+- `messages: list` — full conversation history
 
 ### Node Sequence
 
-1. `classify`
-Classifies the user message into one of: `news`, `sentiment`, `match_facts`, `prediction`, `other`.
+1. **`classify_intent`**
+Classifies the user message into one of: `news`, `sentiment`, `data`, `prediction`, `chat`, `rules`.
 
-2. `router`
-Maps intent to one selected specialist node (`selected_agent`).
+2. **`route_request`** (Planner)
+Calls the Planner Agent to select 1–3 specialist agents. Writes `selected_agents` and `selected_agent` (primary).
 
-3. Specialist node
-Runs exactly one of:
-- `news`
-- `sentiment`
-- `match_facts`
-- `prediction`
-- `other`
-
-Each specialist now returns structured payload:
+3. **`execute_agents_node`**
+Runs all selected agents **sequentially**. Each agent returns structured payload:
 - `answer`
 - `confidence_score`
 - `confidence_reason`
-- `metadata`
+- `metadata` (with `data_source` field)
 
-4. `confidence`
+Runners available:
+- `news` — `_run_news()`
+- `sentiment` — `_run_sentiment()`
+- `match_facts` — `_run_match_facts()` (API-Football + weather + web fallback)
+- `prediction` — `_run_prediction()`
+- `bigquery` — `_run_bigquery()` (catalog-driven function-calling)
+- `chat` — `_run_chat()` (LLM conversational fallback)
+- `rules` — `_run_rules()` (FIFA regulations lookup)
+
+4. **`aggregate_outputs_node`**
+When multiple agents ran, picks primary payload using priority ranking: `bigquery=3 > api=1 > other=0`. For multi-agent responses, synthesizes with an LLM prompt that prioritizes BigQuery-backed data.
+
+5. **`score_confidence`**
 Normalizes score into `[0.0, 1.0]` and labels:
 - `high` if score `>= 0.80`
 - `medium` if `0.55 <= score < 0.80`
 - `low` if score `< 0.55`
 
-5. `compose`
+6. **`compose_reply`**
 Uses the Result Composer Agent to produce final user response.
 For low confidence, includes reason and a refinement tip.
 Also logs the final response through Docs Agent.
 
 ### Edges
 
-The graph edges are:
+The graph is a straight 6-node pipeline:
 
-- `classify -> router`
-- `router -> news | sentiment | match_facts | prediction | other`
-- `(news | sentiment | match_facts | prediction | other) -> confidence`
-- `confidence -> compose`
-- `compose -> END`
+- `classify_intent → route_request`
+- `route_request → execute_agents_node`
+- `execute_agents_node → aggregate_outputs_node`
+- `aggregate_outputs_node → score_confidence`
+- `score_confidence → compose_reply`
+- `compose_reply → END`
 
 ---
 
@@ -104,15 +114,18 @@ The graph edges are:
 
 | Agent | Role | Primary Tools |
 |---|---|---|
-| **Orchestrator** | Parses user intent, routes to specialist agents, composes final reply | LangGraph, GPT-4o |
-| **News Agent** | Fetches latest news about a match/team/player | Tavily, NewsAPI |
-| **Sentiment Agent** | Analyses social media buzz around a game | Twitter/X API v2, VADER, DistilBERT |
-| **Match Facts Agent** | Returns lineups, venue, weather, referee, standings | API-Football, OpenWeatherMap |
-| **Prediction Agent** | Generates match outcome probabilities | scikit-learn (XGBoost), LLM chain-of-thought |
-| **Result Composer Agent** | Builds final WhatsApp response from structured outputs and confidence signals | LangGraph node + formatting logic |
-| **BigQuery Agent** | Uploads processed data to BQ, runs analytical queries | google-cloud-bigquery |
+| **Orchestrator** | Parses user intent, routes to specialist agents (1–3), aggregates multi-agent outputs, composes final reply | LangGraph, GPT-4o-mini, WorkflowTracker |
+| **Planner Agent** | Selects 1–3 specialist agents for a query, with keyword fallback for robustness | GPT-4o-mini, structured JSON output |
+| **News Agent** | Fetches latest news about a match/team/player (5-provider fallback: DuckDuckGo → Serper → Tavily → NewsAPI → Google News RSS) | Tavily, NewsAPI, DuckDuckGo HTML |
+| **Sentiment Agent** | Analyses social media buzz around a game | Twitter/X API v2, VADER |
+| **Match Facts Agent** | Returns fixtures, lineups, venue, weather, referee, standings (cache-first: BQ → API-Football → web → LLM) | API-Football, OpenWeatherMap, web scraping, BigQuery |
+| **Prediction Agent** | Generates match outcome probabilities (cache-first: BQ heuristic → API warm → uniform fallback) | BigQuery, API-Football, XGBoost (planned) |
+| **BigQuery Agent** | Catalog-driven BQ querying via function calling (list → describe → sample → run_sql → format). Single source of truth for all structured football data | google-cloud-bigquery, datamodel catalog |
+| **Rules Agent** | Answers FIFA World Cup 2026 regulations questions (Articles 1–52). Cites specific articles from official document | GPT-4o-mini, `Docs/FWC26_regulations_EN.txt` |
+| **Result Composer Agent** | Formats agent output for end-user display. Adds confidence line, low-confidence tips, prediction cautions | GPT-4o-mini, formatting logic |
 | **Docs Agent** | Writes session summaries, keeps docs up-to-date | LLM + file tools |
 | **Code Review Agent** | Reviews generated Python snippets before execution | Ruff, mypy, LLM review |
+| **Workflow Logger** | Tracks orchestrator node execution with timestamps, input/output snapshots, full JSON trace | In-memory tracker, session-scoped |
 
 ---
 
@@ -156,165 +169,122 @@ The graph edges are:
 
 ---
 
-## Repository Structure (target)
+## Repository Structure (current)
 
 ```
 worldcup_2026/
 ├── pyproject.toml
 ├── README.md
+├── AGENT_SYSTEM_ANALYSIS.md
+├── DATA_CONTRACT.md
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml
+├── Docs/
+│   └── FWC26_regulations_EN.txt      # Official FIFA regulations (Articles 1–52)
 ├── src/
 │   ├── __init__.py
 │   ├── entrypoint.ipynb
 │   ├── prepare_workspace.py
-│   ├── server/                     # FastAPI webhook
+│   ├── workflow_testing_notebook.ipynb
+│   ├── server/                     # FastAPI + Streamlit interfaces
 │   │   ├── __init__.py
-│   │   ├── app.py
-│   │   └── whatsapp_handler.py
-│   ├── agents/                     # All agents
+│   │   ├── app.py                  # FastAPI webhook server
+│   │   ├── streamlit_app.py        # Streamlit chat UI (alternative)
+│   │   └── whatsapp_handler.py     # Twilio message handling
+│   ├── agents/                     # All agents (orchestrator + planner + 8 specialists)
 │   │   ├── __init__.py
-│   │   ├── orchestrator.py
+│   │   ├── orchestrator.py         # LangGraph pipeline (6-node, multi-agent)
+│   │   ├── planner_agent.py        # Agent selection (1–3 agents, keyword fallback)
 │   │   ├── result_composer_agent.py
-│   │   ├── news_agent.py
-│   │   ├── sentiment_agent.py
-│   │   ├── match_facts_agent.py
-│   │   ├── prediction_agent.py
-│   │   ├── bigquery_agent.py
-│   │   ├── docs_agent.py
-│   │   └── code_review_agent.py
+│   │   ├── bigquery_agent.py       # Catalog-driven function-calling BQ agent
+│   │   ├── match_facts_agent.py    # Cache-first fixtures/weather/referee
+│   │   ├── news_agent.py           # 5-provider fallback news search
+│   │   ├── sentiment_agent.py      # Twitter/VADER sentiment
+│   │   ├── prediction_agent.py     # Match outcome prediction (heuristic + planned ML)
+│   │   ├── rules_agent.py          # FIFA regulations Q&A (NEW)
+│   │   ├── docs_agent.py           # Session logging
+│   │   ├── code_review_agent.py    # Code lint + review
+│   │   └── workflow_logger.py      # Execution tracing (NEW)
 │   ├── tools/                      # Reusable tool functions for agents
 │   │   ├── __init__.py
-│   │   ├── api_football.py
-│   │   ├── weather.py
-│   │   ├── news_search.py
-│   │   ├── twitter_sentiment.py
-│   │   └── bigquery_tools.py
+│   │   ├── api_football.py         # RapidAPI API-Football client
+│   │   ├── weather.py              # OpenWeatherMap client
+│   │   ├── news_search.py          # Multi-provider news search
+│   │   ├── twitter_sentiment.py    # Twitter/X sentiment
+│   │   ├── bigquery_tools.py       # BQ query execution
+│   │   ├── datamodel_tools.py      # Catalog-driven BQ tools (list/describe/sample/run_sql)
+│   │   └── api_usage_tracker.py    # API call tracking
 │   ├── models/                     # ML prediction models
 │   │   ├── __init__.py
 │   │   ├── feature_engineering.py
 │   │   ├── train.py
 │   │   └── predict.py
-│   └── data/                       # Data ingestion & processing
+│   └── data/                       # Data ingestion & BigQuery data model
 │       ├── __init__.py
-│       ├── ingest_historical.py
-│       └── schemas.py
-└── bin/
-    ├── artifacts/
-    ├── data_outputs/
-    ├── docs/
-    ├── mlruns/
-    ├── models_deployed/
-    └── scripts/
-        ├── run_server.sh
-        └── deploy_cloud_run.sh
+│       ├── startup_etl.py
+│       └── datamodel/              # 20 tables: 4 dims + 4 facts + 6 marts + 4 raw + catalog
+│           ├── __init__.py
+│           ├── catalog.py          # Self-documenting table metadata
+│           ├── build_datamodel.py
+│           ├── dim_team.py, dim_competition.py, dim_venue.py, dim_date.py
+│           ├── fact_match.py, fact_match_team.py, fact_match_event.py, fact_standings_snapshot.py
+│           ├── mart_team_profile.py, mart_team_form.py, mart_head_to_head.py
+│           ├── mart_match_history.py, mart_match_upcoming.py, mart_tournament_state.py
+│           └── raw_fixtures.py, raw_fixture_events.py, raw_fixture_statistics.py, raw_standings.py
+├── bin/
+│   ├── artifacts/
+│   ├── data_outputs/
+│   ├── docs/                       # Session logs
+│   ├── mlruns/
+│   ├── models_deployed/
+│   └── scripts/
+│       ├── run_server.sh
+│       └── deploy_cloud_run.sh
+├── tests/
+│   └── test_agents.py
+└── secrets/
+    └── gcp_service_account.json
 ```
 
 ---
 
-## 11-Day Sprint Plan
+## Sprint Progress (May 30 — June 10, 2026)
 
-> Start: **May 30, 2026** → Deadline: **June 10, 2026**
+> Current date: **June 7, 2026** — Day 9 of 11. **3 days to deadline.**
 
-### Day 1–2 | Infrastructure & Environment
-**Goal:** Everything boots, secrets are wired, skeleton modules exist.
+### ✅ Done
 
-- [ ] Update `pyproject.toml` — add all new dependencies
-- [ ] Create `.env.example` with all required API keys
-- [ ] Create `Dockerfile` + `docker-compose.yml`
-- [ ] Scaffold all `src/` directories and `__init__.py` files
-- [ ] Create BigQuery dataset + service account JSON
-- [ ] Test Twilio WhatsApp sandbox (send/receive one message)
-- [ ] Set up MLflow tracking server (local, `bin/mlruns/`)
+| Day | Scope | Status |
+|-----|-------|--------|
+| 1–2 | Infrastructure: `pyproject.toml`, `Dockerfile`, `docker-compose.yml`, BQ dataset, service account, `.env.example` | ✅ Complete |
+| 3–4 | Tools layer: `api_football.py`, `weather.py`, `news_search.py`, `twitter_sentiment.py`, `bigquery_tools.py`, `datamodel_tools.py`, `api_usage_tracker.py` | ✅ Complete |
+| 3–4 | Data model: 20-table catalog (4 dims + 4 facts + 6 marts + 4 raw), `catalog.py`, `build_datamodel.py`, `startup_etl.py` | ✅ Complete |
+| 5–6 | Specialist agents: `news_agent`, `sentiment_agent`, `match_facts_agent`, `bigquery_agent`, `prediction_agent`, `docs_agent`, `code_review_agent` | ✅ Complete |
+| 5–6 (extra) | New: `rules_agent.py` — FIFA regulations Q&A from official document | ✅ Complete |
+| 5–6 (extra) | New: `planner_agent.py` — agent selection with keyword fallback | ✅ Complete |
+| 5–6 (extra) | New: `workflow_logger.py` — execution tracing | ✅ Complete |
+| 9 | Orchestrator: 6-node LangGraph pipeline with multi-agent execution | ✅ Complete |
+| 9 | Server: `app.py` (FastAPI), `streamlit_app.py` (web UI), `whatsapp_handler.py` (Twilio) | ✅ Complete |
 
-**Deliverable:** `docker-compose up` runs without error; WhatsApp sandbox replies "pong".
+### ⚠️ In Progress / Partial
 
----
+| Day | Scope | Status |
+|-----|-------|--------|
+| 7–8 | Prediction model: heuristic works, XGBoost path is TODO | ⚠️ Heuristic only |
+| 9 | End-to-end WhatsApp test | ⚠️ Needs ngrok setup |
+| 10 | Docs agent session logging wired | ⚠️ In orchestrator but not fully tested |
 
-### Day 3–4 | Data Ingestion & Tools Layer
-**Goal:** All external APIs callable, data flowing into BigQuery.
+### ❌ Remaining
 
-- [ ] `src/tools/api_football.py` — matches, lineups, standings, fixtures
-- [ ] `src/tools/weather.py` — venue city forecast
-- [ ] `src/tools/news_search.py` — Tavily + NewsAPI integration
-- [ ] `src/tools/twitter_sentiment.py` — recent tweets, VADER scoring
-- [ ] `src/tools/bigquery_tools.py` — upload DataFrame, run SQL query
-- [ ] `src/data/ingest_historical.py` — fetch historical WC data → BigQuery
-- [ ] `src/data/schemas.py` — Pydantic models for all data contracts
-- [ ] Notebook: `src/entrypoint.ipynb` — exploratory validation of all tools
-
-**Deliverable:** Each tool has a standalone `if __name__ == "__main__"` test. All return valid data.
-
----
-
-### Day 5–6 | Specialist Agents
-**Goal:** Each agent callable in isolation with a test question.
-
-- [ ] `src/agents/news_agent.py` — LangGraph node, wraps `news_search` tool
-- [ ] `src/agents/sentiment_agent.py` — wraps `twitter_sentiment` + DistilBERT classifier
-- [ ] `src/agents/match_facts_agent.py` — wraps `api_football` + `weather` tools
-- [ ] `src/agents/bigquery_agent.py` — wraps `bigquery_tools`, exposes upload + query actions
-- [ ] `src/agents/docs_agent.py` — writes session log markdown to `bin/docs/`
-- [ ] `src/agents/code_review_agent.py` — runs Ruff + mypy, then LLM review pass
-- [ ] Unit tests in `tests/test_agents.py`
-
-**Deliverable:** `pytest tests/test_agents.py` — all agents return structured output for a test match.
-
----
-
-### Day 7–8 | Prediction Model
-**Goal:** A trained model that returns win/draw/loss probabilities.
-
-- [ ] `src/data/ingest_historical.py` — finalize historical data (FIFA rankings, ELO, form, H2H)
-- [ ] `src/models/feature_engineering.py` — build feature matrix
-- [ ] `src/models/train.py` — XGBoost classifier, MLflow experiment logged
-- [ ] `src/models/predict.py` — load model from `bin/models_deployed/`, return probabilities
-- [ ] `src/agents/prediction_agent.py` — wraps `predict.py` + LLM chain-of-thought explanation
-- [ ] Notebook: validate model accuracy on test split, log to MLflow
-
-**Deliverable:** Model serialised to `bin/models_deployed/wc2026_predictor.pkl`. Prediction agent returns: "Portugal 58% | Draw 22% | Morocco 20%".
-
----
-
-### Day 9 | Orchestrator + WhatsApp Server
-**Goal:** Full message round-trip from WhatsApp → orchestrator → specialist agents → reply.
-
-- [ ] `src/agents/orchestrator.py` — LangGraph `StateGraph`, intent classification, agent routing
-- [ ] `src/server/app.py` — FastAPI app, `/webhook` POST endpoint
-- [ ] `src/server/whatsapp_handler.py` — Twilio signature validation, message parsing, reply sending
-- [ ] Wire orchestrator into webhook handler
-- [ ] End-to-end test: "What are the lineups for Portugal vs Morocco?" → full reply
-
-**Deliverable:** Running locally with `ngrok`, real WhatsApp message answered correctly.
-
----
-
-### Day 10 | Integration, BigQuery Pipeline & Polish
-**Goal:** Data flows to BigQuery; all agents co-operate.
-
-- [ ] BigQuery agent uploads match facts + predictions after each query
-- [ ] Docs agent logs every session to `bin/docs/`
-- [ ] Code review agent gates any dynamically generated code before execution
-- [ ] Add rate-limiting to FastAPI (per WhatsApp number)
-- [ ] Secrets management review — no keys in code
-- [ ] `bin/scripts/run_server.sh` — single command to start everything
-
-**Deliverable:** A full demo flow with 5 different question types all working end-to-end.
-
----
-
-### Day 11 | Deployment & Final Testing
-**Goal:** Live on the internet, stable, documented.
-
-- [ ] `Dockerfile` + `bin/scripts/deploy_cloud_run.sh` — deploy to Cloud Run (or Railway as fallback)
-- [ ] Set production Twilio webhook to Cloud Run URL
-- [ ] Environment variables in Cloud Run secrets
-- [ ] Smoke test all 7 agent types from real WhatsApp
-- [ ] Final README pass — update with actual API key setup steps
-- [ ] Tag release `v1.0.0`
-
-**Deliverable:** Public URL, real WhatsApp number answering World Cup questions.
+| Day | Scope | Priority |
+|-----|-------|----------|
+| 10 | Rate-limiting, secrets audit, `run_server.sh` | 🟡 High |
+| 10 | BigQuery agent uploads after each query | 🟡 High |
+| 11 | Cloud Run deployment (`deploy_cloud_run.sh`) | 🟡 High |
+| 11 | Production Twilio webhook + smoke test | 🟡 High |
+| 7–8 | Real XGBoost model training (replaces heuristic) | 🟢 Med |
+| — | `match_facts_agent` not in planner's `AVAILABLE_AGENTS` — dead code path (see `AGENT_SYSTEM_ANALYSIS.md` for fix) | 🔴 Critical |
 
 ---
 
@@ -355,47 +325,29 @@ BIGQUERY_DATASET_ID=worldcup2026
 ## Key Design Decisions
 
 ### Why LangGraph over CrewAI / AutoGen?
-LangGraph gives explicit control over agent state and message routing — critical when WhatsApp sessions must be stateful across multiple turns. CrewAI is higher-level but less controllable for production webhook flows.
+LangGraph gives explicit control over agent state and message routing — critical when WhatsApp sessions must be stateful across multiple turns. CrewAI is higher-level but less controllable for production webhook flows. The current 6-node pipeline (`classify → route → execute → aggregate → confidence → compose`) provides full observability.
+
+### Why a Planner Agent separate from the Orchestrator?
+The Planner (`planner_agent.py`) handles agent selection with a structured JSON contract and keyword-based fallback. Separating this from the orchestrator keeps each component focused: the orchestrator manages state flow, the planner decides **who** to call. This also makes the planner independently testable.
+
+### Why catalog-driven BQ agent design?
+The BQ agent discovers tables dynamically via `catalog.py` (`list_tables → describe_table → sample_table → run_sql → format`). No table names are hardcoded. This makes the system self-documenting, adaptable to schema changes, and enforces read-only access via table allow-listing in `datamodel_tools.py`.
+
+### Why cache-first for API calls?
+`match_facts_agent` and `prediction_agent` use BQ → API → web → LLM fallback chains. This minimizes API costs, reduces latency, and ensures the BQ gold model is the primary data source. External APIs are fallbacks, not the default.
 
 ### Why XGBoost over a pure LLM for predictions?
-LLMs hallucinate probabilities. A trained XGBoost on historical match data (ELO ratings, FIFA rankings, form, H2H records, tournament stage) gives calibrated probabilities. The LLM then **explains** those probabilities in natural language.
+LLMs hallucinate probabilities. A trained XGBoost on historical match data (ELO ratings, FIFA rankings, form, H2H records, tournament stage) gives calibrated probabilities. The LLM then **explains** those probabilities in natural language. Currently the heuristic provides directional guidance while the XGBoost model is being trained.
 
 ### Why Cloud Run for hosting?
 Serverless, scales to zero (low cost during quiet periods), handles Twilio webhook latency requirements, integrates natively with BigQuery and Secret Manager.
 
 ### Why BigQuery as the sole data store?
-All data — raw fixtures, match events, predictions, session logs — flows directly into BigQuery. This keeps the stack simple: one query engine, one IAM model, and SQL for everything. BigQuery handles both the operational queries the agents make in real time and the analytical queries for model training, with no extra infrastructure to maintain.
+All data — raw fixtures, match events, predictions, session logs — flows directly into BigQuery. This keeps the stack simple: one query engine, one IAM model, and SQL for everything. The 20-table catalog (4 dims + 4 facts + 6 marts + 4 raw) provides a complete star schema for the World Cup domain.
 
 ---
 
 ## Setup Instructions
-
-### macOS
-
-1. **Install Poetry**
-   ```bash
-   curl -sSL https://install.python-poetry.org | python3 -
-   ```
-   
-   After installation, add Poetry to your PATH by adding this line to your shell profile (`~/.zshrc` or `~/.bash_profile`):
-   ```bash
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-   
-   Then reload your shell:
-   ```bash
-   source ~/.zshrc
-   ```
-
-2. **Configure Poetry to use in-project virtual environments**
-   ```bash
-   poetry config virtualenvs.in-project true
-   ```
-
-3. **Install project dependencies**
-   ```bash
-   poetry install
-   ```
 
 ### macOS
 

@@ -1,6 +1,6 @@
 # World Cup 2026 — Agent System Deep-Dive Analysis
 
-> **Date**: 2026-06-06 | **Author**: AI System Analysis  
+> **Date**: 2026-06-07 | **Author**: AI System Analysis  
 > **Goal**: Understand the current agent architecture end-to-end, audit capabilities vs. the target user experience, and produce a scored, prioritized improvement roadmap.
 
 ---
@@ -16,8 +16,9 @@
    - [Prediction Agent (`prediction_agent.py`)](#25-prediction-agent)
    - [News Agent (`news_agent.py`)](#26-news-agent)
    - [Sentiment Agent (`sentiment_agent.py`)](#27-sentiment-agent)
-   - [Result Composer (`result_composer_agent.py`)](#28-result-composer)
-   - [Docs Agent, Code Review Agent, Workflow Logger](#29-supporting-agents)
+   - [Rules Agent (`rules_agent.py`)](#28-rules-agent)
+   - [Result Composer (`result_composer_agent.py`)](#29-result-composer)
+   - [Docs Agent, Code Review Agent, Workflow Logger](#210-supporting-agents)
 3. [Data Model Deep Dive (BigQuery)](#3-data-model-deep-dive)
 4. [Communication Flow](#4-communication-flow)
 5. [Question Capability Matrix](#5-question-capability-matrix)
@@ -33,42 +34,48 @@
 User Message (WhatsApp / Streamlit / Web)
         │
         ▼
-┌─────────────────────────────────────┐
-│         ORCHESTRATOR                │
-│  (LangGraph StateGraph pipeline)     │
-│                                     │
-│  classify_intent ──► route_request  │
-│       │                   │         │
-│       ▼                   ▼         │
-│  execute_agents ──► aggregate       │
-│       │                   │         │
-│       ▼                   ▼         │
-│  score_confidence ──► compose_reply │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   ORCHESTRATOR                            │
+│            (LangGraph StateGraph pipeline)                 │
+│                                                           │
+│  classify_intent ──► route_request (planner)              │
+│       │                      │                            │
+│       ▼                      ▼                            │
+│  execute_agents ──────► aggregate_outputs                 │
+│  (1–3 agents seq.)          │                             │
+│       │                     ▼                             │
+│       ▼              score_confidence                     │
+│  agent_outputs             │                              │
+│  collected into             ▼                              │
+│  state dict          compose_reply                        │
+└──────────────────────────────────────────────────────────┘
         │
         ▼
 ┌───────────────────┐    ┌──────────────────┐
 │   PLANNER AGENT   │───►│  SPECIALIST       │
-│  (agent selection) │    │  AGENTS           │
+│  (agent selection) │    │  AGENTS (7)       │
 │                   │    │                   │
 │  Rules:           │    │  • bigquery       │
 │  - structured     │    │  • match_facts    │
 │    data → bigquery│    │  • prediction     │
 │  - prediction →   │    │  • news           │
 │    pred + bq      │    │  • sentiment      │
-│  - news → news    │    │  • chat (fallback)│
-│  - sentiment →    │    │                   │
-│    sentiment      │    └──────────────────┘
+│  - news → news    │    │  • rules          │
+│  - sentiment →    │    │  • chat (fallback)│
+│    sentiment      │    │                   │
+│  - rules → rules  │    └──────────────────┘
 │  - chat → chat    │
 └───────────────────┘
 ```
 
-**Key observations**:
+**Key observations** (updated June 7, 2026):
 
-- **LangGraph pipeline**: 6 sequential nodes (`classify` → `router` → `execute_agents` → `aggregate` → `confidence` → `compose`). No branching, no conditional edges. This is a straight pipeline — not a graph.
-- **Planner selects 1-2 agents**. The orchestrator runs them **sequentially** (line 236-250 in orchestrator), not in parallel. This is correct for cost control but increases latency for multi-agent queries.
-- **No streaming**. The entire pipeline must complete before the user sees anything. For a fan watching a live game, waiting 15-30 seconds is unacceptable.
-- **match_facts_agent is NOT in the planner's AVAILABLE_AGENTS list** but is registered in the orchestrator's `runners` dict and has an `_run_match_facts` function. It's **unreachable** via normal routing — a dead code path.
+- **6-node pipeline**: `classify_intent → route_request → execute_agents_node → aggregate_outputs_node → score_confidence → compose_reply`. Still a straight pipeline — no conditional branching.
+- **Multi-agent execution**: The orchestrator now supports 1–3 agents selected by the planner. Agents run **sequentially** (not parallel), outputs collected into `agent_outputs` dict.
+- **BigQuery priority in aggregation**: `aggregate_outputs_node` ranks outputs by data source quality: bigquery=3 > api=1 > other=0. BigQuery-backed outputs always win when synthesizing multi-agent results.
+- **Planner now has `match_facts` keyword fallback** but `match_facts` is **NOT in `AVAILABLE_AGENTS`** list. All match-specific queries route to `bigquery` instead. The orchestrator DOES have a `_run_match_facts` runner — it's registered in the `runners` dict. This inconsistency means `match_facts_agent` is only reachable via orchestrator's `runners` dict but **never selected by the planner**.
+- **New: `rules` intent and agent** added to both `_INTENTS`, `_AGENTS` lists, planner's `AVAILABLE_AGENTS`, and orchestrator's `runners` dict. Fully routable.
+- **No streaming**. The entire 6-node pipeline must complete before the user sees anything. For a fan watching a live game, waiting 15-30 seconds is a real concern.
 
 ---
 
@@ -78,37 +85,50 @@ User Message (WhatsApp / Streamlit / Web)
 
 **File**: `src/agents/orchestrator.py`  
 **Model**: `gpt-4o-mini`  
-**State**: `OrchestratorState` TypedDict with 12 fields
+**State**: `OrchestratorState` TypedDict with 12 fields (now includes `selected_agents: list[str]` and `agent_outputs: dict`)
 
 **What it does well**:
 - Clean separation of concerns: classification, routing, execution, aggregation, confidence, composition are distinct nodes.
 - The `aggregate_outputs_node` has a smart priority system: BigQuery-backed outputs always win over API/web outputs when synthesizing multi-agent results. This is **correct and critical** for factual accuracy.
 - `_pick_primary_payload` ranks agents by data source quality (bigquery=3, api=1, other=0) then by confidence score. Good design.
-- WorkflowTracker provides full execution tracing.
+- `WorkflowTracker` provides full execution tracing with input/output snapshots per node.
+- `_build_contextual_user_message` adds conversation context to help specialist agents resolve references like "that team" or "the previous match."
 
 **Issues & Risks**:
 
-- **[Severity: High]** `match_facts_agent` is defined as a runner (`_run_match_facts`) but is **NOT in the planner's `AVAILABLE_AGENTS`** list. The planner can never select it. All match-facts queries route to `bigquery` instead. The orchestrator's `_run_match_facts` function is dead code.
+- **[Severity: High]** `match_facts_agent` is defined as a runner (`_run_match_facts`) and registered in the `runners` dict but is **NOT in the planner's `AVAILABLE_AGENTS`** list. The planner can never select it. All match-facts queries route to `bigquery` instead. The orchestrator's `_run_match_facts` function is dead code. See P1.1 in Improvement Roadmap.
 - **[Severity: Med]** The graph is a straight pipeline — no conditional branching. The `intent` field from `classify_intent` is stored in state but **never used for routing decisions**. The `route_request` node calls the planner regardless of the intent classification. Two LLM calls for classification is wasteful.
-- **[Severity: Med]** `_AGENTS` list includes `"bigquery"` but the intent classifier uses `_INTENTS = ["news", "sentiment", "data", "prediction", "chat"]`. The `"data"` intent doesn't map directly to `"bigquery"` agent name — the planner bridges this, but it's a fragile disconnect.
-- **[Severity: Low]** The orchestrator uses `gpt-4o-mini` for classification, planning, AND chat responses. For production, consider a faster/cheaper model for classification (classification is a simple 5-way choice).
+- **[Severity: Med]** `_AGENTS` list includes `"bigquery"` but the intent classifier uses `"data"` as the intent label (not `"bigquery"`). The planner bridges this disconnect, but it's fragile.
+- **[Severity: Low]** The orchestrator uses `gpt-4o-mini` for classification, planning, AND chat responses. For production, consider a faster/cheaper model for classification (a simple 6-way choice).
+
+**New since last analysis**:
+- `_run_rules()` runner added — calls `rules_agent.run_structured()`
+- `selected_agents` list supports 1–3 agents (was single `selected_agent`)
+- `execute_agents_node` iterates over all selected agents, collects outputs into `agent_outputs` dict
+- `rules` added to both `_INTENTS` and `_AGENTS`
 
 ### 2.2 Planner Agent
 
 **File**: `src/agents/planner_agent.py`  
 **Model**: `gpt-4o-mini`  
-**Purpose**: Selects 1-2 specialist agents for a given user query.
+**Purpose**: Selects 1–3 specialist agents for a given user query.
 
 **What it does well**:
-- Has a robust `_fallback_plan` with keyword-based routing when JSON parsing fails. This is excellent defensive design.
+- Has a robust `_fallback_plan` with keyword-based routing when JSON parsing fails. This is excellent defensive design. The fallback covers: count/schema queries, predictions, news, sentiment, fixtures/matches/venues/referees/lineups, rules/regulations, and chat fallback.
 - Returns structured JSON with `agents`, `response_mode`, `reason`, `primary_agent`.
 - Enforces the critical rule: "bigquery is the single source of truth for all structured football data."
+- Keywords for rules fallback are comprehensive: `rule, regulation, format, yellow card, red card, penalty, extra time, protest, disciplinary, eligibility, squad, kit, doping, award, trophy, substitute, var, offsides, handball`.
 
 **Issues & Risks**:
 
-- **[Severity: High]** `AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat"]` — **`match_facts` is missing**. This means queries like "What's the lineup for Portugal vs Morocco?" or "Who is the referee?" route to `bigquery` instead of `match_facts`. The `bigquery_agent` can answer these from the data model, but `match_facts_agent` has API-Football integration with live data that the gold model may not have yet.
+- **[Severity: High]** `AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]` — **`match_facts` is missing**. This means queries like "What's the lineup for Portugal vs Morocco?" or "Who is the referee?" route to `bigquery` instead of `match_facts`. The `bigquery_agent` can answer these from the data model, but `match_facts_agent` has API-Football integration with live data that the gold model may not have yet. The orchestrator's `runners` dict DOES include `_run_match_facts` — so if `match_facts` were in `AVAILABLE_AGENTS`, it would work. This is a one-line fix.
 - **[Severity: Med]** The planner prompt says "Never select more than 2 agents unless truly necessary" but also says to include `prediction + bigquery` for prediction queries. For a question like "predict Portugal vs Morocco and give me recent news about both teams", it would need 3 agents (prediction, bigquery, news) but the planner would truncate to 2. The orchestrator's `selected_agents = cleaned[:3]` does allow up to 3, creating an inconsistency.
 - **[Severity: Low]** The planner has no concept of "the user just asked a follow-up." It treats every message independently. Context awareness is limited to the conversation history text passed in the prompt — no structured turn tracking.
+
+**Changes since last analysis**:
+- `rules` added to `AVAILABLE_AGENTS`
+- `rules` added to fallback keyword routing
+- `rules` added to planner prompt with description: "official FIFA World Cup 2026 rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, financial provisions"
 
 ### 2.3 BigQuery Agent
 
@@ -339,7 +359,44 @@ User: "Predict Portugal vs Morocco"
 - **[Severity: High]** This agent is **unlikely to work in production**. Twitter/X API v2 has severely restricted free-tier access. The `twitter_sentiment.py` tool is not in the workspace (only the import exists). This agent will likely fail or return 0 tweets, yielding confidence 0.2.
 - **[Severity: Med]** Sentiment analysis on tweets during a live match has very low signal-to-noise. Fans tweet emotionally — "Portugal is killing it!" could be sarcastic. VADER doesn't handle sarcasm. This agent's output is entertainment, not insight.
 
-### 2.8 Result Composer
+### 2.8 Rules Agent (NEW)
+
+**File**: `src/agents/rules_agent.py`  
+**Model**: `gpt-4o-mini`  
+**Added**: June 2026
+
+**What it does**: Answers questions about the FIFA World Cup 2026™ official regulations. Loads `Docs/FWC26_regulations_EN.txt` (Articles 1–52) into the system prompt and uses an LLM to retrieve, interpret, and explain specific rules, articles, and competition procedures.
+
+**Coverage**: All 14 sections of the FIFA regulations:
+- I. General Provisions (Articles 1–6)
+- II. Disciplinary Matters and Procedures (Articles 7–10)
+- III. Competition Format (Articles 11–14)
+- IV. Competition Preparation (Articles 15–18)
+- V. Stadiums and Training Sites (Articles 19–21)
+- VI. Players' and Officials' Lists (Articles 22–27)
+- VII. Kit and Team Equipment (Articles 28–31)
+- VIII. Match Organisation (Articles 32–35)
+- IX. Refereeing (Articles 36–37)
+- X. Financial Provisions (Articles 38–40)
+- XI. Medical (Articles 41–43)
+- XII. Commercial Rights (Article 44)
+- XIII. Awards (Article 45)
+- XIV. Closing Provisions (Articles 46–52)
+
+**What it does well**:
+- Regulations text loaded once at startup and cached globally
+- System prompt instructs the LLM to cite specific Article and paragraph numbers
+- Returns structured payload: `{answer, confidence_score=0.80, metadata}`
+- Well within gpt-4o-mini's 128K context window (~32K tokens for regulations)
+- Fully routable: registered in `_INTENTS`, `_AGENTS`, planner's `AVAILABLE_AGENTS`, and orchestrator's `runners` dict
+
+**Issues & Risks**:
+
+- **[Severity: High]** The regulations file at `Docs/FWC26_regulations_EN.txt` is **empty (0 bytes)**. The agent gracefully handles this by returning confidence 0.1 and a polite "cannot access" message, but it's non-functional until the file is populated.
+- **[Severity: Med]** The entire regulations text is loaded into the system prompt for every query. This means every rules query sends ~32K tokens of context, even for simple questions like "How many substitutions are allowed?" A RAG approach with chunked retrieval would be more cost-efficient.
+- **[Severity: Low]** No keyword-based pre-filter. A query about "awards" still sends all 52 articles to the LLM.
+
+### 2.9 Result Composer
 
 **File**: `src/agents/result_composer_agent.py`  
 **Model**: `gpt-4o-mini`
@@ -357,13 +414,13 @@ User: "Predict Portugal vs Morocco"
 - **[Severity: Low]** The formatting prompt says "Start with a direct answer in one short sentence" but BigQuery answers skip this (passed through raw). This means BQ answers might not have the punchy one-liner that mobile users expect.
 - **[Severity: Low]** No source attribution. The user can't tell which data came from BQ vs web search vs API. "Source: BigQuery" would build trust.
 
-### 2.9 Supporting Agents
+### 2.10 Supporting Agents
 
 | Agent | Purpose | Status |
 |-------|---------|--------|
 | `docs_agent.py` | Logs every session to `bin/docs/` as markdown | ✅ Working, called from orchestrator |
 | `code_review_agent.py` | Lints + type-checks generated code via Ruff + mypy | ⚠️ Only used when agents generate Python (rare) |
-| `workflow_logger.py` | Tracks orchestrator node execution with timestamps | ✅ Working, used extensively |
+| `workflow_logger.py` | Tracks orchestrator node execution with timestamps, input/output snapshots, full JSON trace | ✅ Working, used in every orchestrator node |
 
 ---
 
@@ -468,10 +525,13 @@ compose_reply()            → result_composer_agent.compose()
 | "How many times have Argentina and Brazil played?" | BQ via `mart_head_to_head` | High |
 | "Show Argentina's last 5 matches" | BQ via `mart_match_history` | High |
 | "What are the current WC2026 group standings?" | BQ via `mart_tournament_state` | High |
-| "When does the World Cup start?" | match_facts (calendar) | Very High (0.98) |
+| "When does the World Cup start?" | match_facts (calendar) or rules_agent | Very High (0.98) |
 | "What's the latest news about Portugal?" | news_agent | Medium |
 | "What's the social sentiment about Morocco?" | sentiment_agent | Low (API restrictions) |
 | "Predict Portugal vs Morocco" | prediction_agent | Medium (heuristic) |
+| "How many substitutions are allowed in World Cup 2026?" | rules_agent | ⚠️ File empty — non-functional |
+| "What happens if a player gets a red card?" | rules_agent | ⚠️ File empty — non-functional |
+| "What is the World Cup 2026 competition format?" | rules_agent | ⚠️ File empty — non-functional |
 
 ---
 
@@ -515,17 +575,18 @@ compose_reply()            → result_composer_agent.compose()
 
 Below is the prioritized list of improvements to take this app from its current state to the "go-to companion for a fan watching a World Cup game."
 
-### Phase 1 — Fix the Foundation (Must-Do, 2-3 weeks)
+### Phase 1 — Fix the Foundation (Must-Do, 1–2 weeks)
 
 | # | Improvement | Effort | Impact | Description |
 |---|------------|--------|--------|-------------|
-| **P1.1** | Add `match_facts` to planner agents list | 5 min | 🔴 Critical | Unblocks all match-specific queries. One-line change in `planner_agent.py:AVAILABLE_AGENTS`. |
-| **P1.2** | Create `dim_player` + `fact_player_match_stat` | 3 days | 🔴 Critical | The single biggest gap. Without player data, 40% of target questions are impossible. Model: one row per (match, player, team) with goals, assists, shots, passes, xG, minutes_played. |
-| **P1.3** | Create `fact_lineup` | 1 day | 🔴 Critical | Structured starting XI per match. Table: (match_id, team_id, player_id, position, is_starter, jersey_number). |
-| **P1.4** | Create `mart_player_form` | 1 day | 🟡 High | Rolling player performance over last 5 games. Aggregates `fact_player_match_stat`. Enables "player to watch" queries. |
-| **P1.5** | Add streaming to orchestrator | 3 days | 🟡 High | Use SSE (Server-Sent Events) or WebSocket. Stream each pipeline step: "Classifying intent... → Routing to BigQuery... → Querying data... → Composing answer...". Users see progress within 1 second. |
-| **P1.6** | Wire `match_facts_agent` for live API fallback | 1 day | 🟡 High | When BQ has no data for today's match (ETL not yet run), fall back to API-Football live endpoint. Critical for game-day use. |
-| **P1.7** | Fix orchestrator to eliminate redundant classification | 2 hours | 🟢 Med | Remove `classify_intent` node or use its output in routing. Currently both `classify_intent` AND planner run — two LLM calls for the same decision. |
+| **P1.1** | Add `match_facts` to planner agents list | 5 min | 🔴 Critical | Unblocks all match-specific queries. One-line change in `planner_agent.py:AVAILABLE_AGENTS`. The orchestrator already has `_run_match_facts` wired. |
+| **P1.2** | Populate `Docs/FWC26_regulations_EN.txt` | 30 min | 🔴 Critical | The rules agent is fully implemented but the regulations file is empty (0 bytes). Download/extract the official FIFA PDF text to make rules queries work. |
+| **P1.3** | Create `dim_player` + `fact_player_match_stat` | 3 days | 🔴 Critical | The single biggest gap. Without player data, 40% of target questions are impossible. Model: one row per (match, player, team) with goals, assists, shots, passes, xG, minutes_played. |
+| **P1.4** | Create `fact_lineup` | 1 day | 🔴 Critical | Structured starting XI per match. Table: (match_id, team_id, player_id, position, is_starter, jersey_number). |
+| **P1.5** | Create `mart_player_form` | 1 day | 🟡 High | Rolling player performance over last 5 games. Aggregates `fact_player_match_stat`. Enables "player to watch" queries. |
+| **P1.6** | Add streaming to orchestrator | 3 days | 🟡 High | Use SSE (Server-Sent Events) or WebSocket. Stream each pipeline step: "Classifying intent... → Routing to BigQuery... → Querying data... → Composing answer...". Users see progress within 1 second. |
+| **P1.7** | Wire `match_facts_agent` for live API fallback | 1 day | 🟡 High | When BQ has no data for today's match (ETL not yet run), fall back to API-Football live endpoint. Critical for game-day use. |
+| **P1.8** | Fix orchestrator to eliminate redundant classification | 2 hours | 🟢 Med | Remove `classify_intent` node or use its output in routing. Currently both `classify_intent` AND planner run — two LLM calls for the same decision. |
 
 ### Phase 2 — Enable the Game-Day Experience (Should-Do, 3-4 weeks)
 
@@ -564,31 +625,30 @@ Below is the prioritized list of improvements to take this app from its current 
 
 ## 8. Progress Scorecard
 
-### Current Score: **42/100**
+### Current Score: **47/100** ⬆️ (+5 from previous analysis)
 
-The foundation is solid — the orchestrator, BQ agent, catalog system, and guardrails are well-designed. But the app can only answer ~30% of the target questions today (and many with low accuracy). The biggest gaps are player data, live data freshness, and the missing match_facts routing.
+The foundation is solid — the orchestrator, BQ agent, catalog system, guardrails, and workflow logger are well-designed. The new rules agent (P1.2 prerequisite) and planner improvements have raised the baseline. But the app can only answer ~35% of the target questions today (up from 30%). The biggest remaining gaps are the empty regulations file, missing player data, missing match_facts routing, and no live data freshness.
 
 ### Improvement Contribution to 100%
 
 | # | Improvement | Current Score | Score After | Delta |
 |---|------------|--------------|-------------|-------|
-| — | **CURRENT** | **42** | — | — |
-| P1.1 | Fix match_facts routing | 42 | **48** | +6 |
-| P1.2 | dim_player + fact_player_match_stat | 48 | **60** | +12 |
-| P1.3 | fact_lineup | 60 | **66** | +6 |
-| P1.4 | mart_player_form | 66 | **70** | +4 |
-| P1.5 | Streaming orchestrator | 70 | **73** | +3 |
-| P1.6 | Live API fallback for match_facts | 73 | **76** | +3 |
-| P1.7 | Eliminate redundant classification | 76 | **77** | +1 |
-| P2.1 | Pre-match summary agent | 77 | **85** | +8 |
-| P2.2 | Live polling cron (5-min) | 85 | **88** | +3 |
-| P2.3 | dim_coach | 88 | **90** | +2 |
-| P2.4 | Substitution analysis | 90 | **93** | +3 |
-| P2.5 | Real ML prediction model | 93 | **95** | +2 |
-| P2.6 | Odds API integration | 95 | **96** | +1 |
-| P2.7 | Source attribution | 96 | **96.5** | +0.5 |
-| P3.1 | Modern web frontend | 96.5 | **99** | +2.5 |
-| P3.2-P3.7 | Session, i18n, notifications, etc. | 99 | **100** | +1 |
+| — | **CURRENT** (June 7, 2026) | **47** | — | — |
+| P1.1 | Fix match_facts routing | 47 | **53** | +6 |
+| P1.2 | Populate regulations file | 53 | **57** | +4 |
+| P1.3 | dim_player + fact_player_match_stat | 57 | **69** | +12 |
+| P1.4 | fact_lineup | 69 | **75** | +6 |
+| P1.5 | mart_player_form | 75 | **79** | +4 |
+| P1.6 | Streaming orchestrator | 79 | **82** | +3 |
+| P1.7 | Live API fallback for match_facts | 82 | **85** | +3 |
+| P1.8 | Eliminate redundant classification | 85 | **86** | +1 |
+| P2.1 | Pre-match summary agent | 86 | **93** | +7 |
+| P2.2 | Live polling cron (5-min) | 93 | **95** | +2 |
+| P2.3 | dim_coach | 95 | **97** | +2 |
+| P2.4 | Substitution analysis | 97 | **99** | +2 |
+| P2.5 | Real ML prediction model | 99 | **99.5** | +0.5 |
+| P2.6 | Odds API integration | 99.5 | **99.8** | +0.3 |
+| P2.7 | Source attribution | 99.8 | **100** | +0.2 |
 
 ### Visual Breakdown by Question Type
 
@@ -598,6 +658,18 @@ Question Type                         Current    Target
 Fixtures / Schedule                    ✅ 85%     100%
 Team Form / Stats                      ✅ 90%     100%
 Standings                              ✅ 85%     100%
+Head-to-Head                           ✅ 90%     100%
+Predictions                            ⚠️ 55%      95%
+News / Media                           ✅ 75%      95%
+Sentiment                              ❌ 15%      70%
+Rules / Regulations                    ❌  5%*     95%   (* empty file)
+Lineups / Referees                     ❌ 15%      95%
+Player Stats                           ❌  5%      95%
+Live / In-Play Data                    ❌  5%      95%
+Pre-Match Summary                      ❌  5%      95%
+Coach / Tactical                       ❌  0%      90%
+Weather at Venue                       ⚠️ 50%*     95%   (* not routable)
+```
 H2H Records                            ✅ 80%     100%
 Match Events (goals, cards)            ⚠️ 60%      95%
 Venue / Stadium Info                   ⚠️ 50%      95%
