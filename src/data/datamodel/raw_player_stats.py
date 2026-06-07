@@ -256,9 +256,15 @@ def ingest_missing(
     limit: int | None = None,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict:
     """Fetch player stats from API-Football for completed matches that don't yet
-    have player data in raw_player_stats. Respects API rate limits."""
+    have player data in raw_player_stats. Respects API rate limits.
+
+    max_age_days caps how far back to retry; matches older than that floor
+    will never be re-attempted (avoids burning quota on ancient friendlies
+    that the API has no player data for).
+    """
     ensure_table()
     client = _bq_tools._client()
 
@@ -272,6 +278,10 @@ def ingest_missing(
         conditions.append(f"rf.competition_id IN ({ids})")
     if since_date:
         conditions.append(f"rf.match_date >= '{since_date}'")
+    if max_age_days is not None:
+        conditions.append(
+            f"rf.match_date >= DATE_SUB(CURRENT_DATE('UTC'), INTERVAL {int(max_age_days)} DAY)"
+        )
 
     where = " AND ".join(conditions)
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
@@ -401,6 +411,7 @@ def run(
     limit: int | None = None,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict:
     """Fetch player stats from API-Football for matches missing data.
 
@@ -408,8 +419,12 @@ def run(
         limit: Max matches to process (None = all missing).
         competition_ids: e.g. [1] for World Cup only.
         since_date: ISO date string, e.g. '2026-06-01'. Only matches >= this date.
+        max_age_days: Hard floor on match_date >= today - N days; None disables.
     """
-    return ingest_missing(limit=limit, competition_ids=competition_ids, since_date=since_date)
+    return ingest_missing(
+        limit=limit, competition_ids=competition_ids,
+        since_date=since_date, max_age_days=max_age_days,
+    )
 
 
 if __name__ == "__main__":
