@@ -21,7 +21,7 @@ import streamlit as st
 from src.agents.orchestrator import run_orchestrator
 from src.data.startup_etl import run_full_etl_once
 from src.server.worldcup_style import (
-    WORLD_CUP_CSS,
+    get_world_cup_css,
     world_cup_header_html,
     countdown_html,
     BOUNCING_BALL_HTML,
@@ -118,7 +118,7 @@ if _startup_etl_enabled():
 st.set_page_config(page_title="🏆 World Cup 2026 Chat", page_icon="🏆", layout="centered")
 
 # ── Inject custom World Cup CSS (trophy background, glass chat bubbles, gold accents, animations) ──
-st.markdown(WORLD_CUP_CSS, unsafe_allow_html=True)
+st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 
 # ── Bouncing football animation (floats across screen) ──
 st.markdown(BOUNCING_BALL_HTML, unsafe_allow_html=True)

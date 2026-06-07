@@ -368,8 +368,56 @@ def agent_emoji(agent_name: str) -> str:
 # Custom CSS for World Cup trophy background and chat styling
 # ---------------------------------------------------------------------------
 
-WORLD_CUP_CSS = """
-<style>
+# Lazy-loaded base64 data URI for the World Cup trophy background image.
+_bg_data_uri: str | None = None
+
+
+def _get_bg_data_uri() -> str:
+    """Load the trophy image and return a base64 data URI for CSS embedding."""
+    global _bg_data_uri
+    if _bg_data_uri is not None:
+        return _bg_data_uri
+
+    import base64
+
+    # Resolve the image relative to this module's directory
+    _img_path = os.path.join(os.path.dirname(__file__), "Images", "worldcuptrophee.jpeg.webp")
+    try:
+        with open(_img_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        _bg_data_uri = f"data:image/webp;base64,{b64}"
+    except FileNotFoundError:
+        # Fallback: use the trophy emoji approach
+        _bg_data_uri = ""
+    return _bg_data_uri
+
+
+def _build_world_cup_css() -> str:
+    """Build the full CSS with the trophy background image injected."""
+    bg_uri = _get_bg_data_uri()
+
+    # Use the actual image as background if available, otherwise fallback to emoji
+    if bg_uri:
+        background_rule = f"""
+/* ── Full-page background with the World Cup trophy image ── */
+[data-testid="stAppViewContainer"] {{
+    background:
+        linear-gradient(180deg, rgba(10, 31, 46, 0.92) 0%, rgba(13, 43, 62, 0.88) 40%, rgba(15, 26, 46, 0.92) 100%),
+        url("{bg_uri}");
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}}
+
+/* Hide the ::before trophy emoji since we have the real image */
+[data-testid="stAppViewContainer"]::before {{
+    content: none;
+}}
+"""
+    else:
+        # Fallback to emoji watermark
+        background_rule = """
 /* ── Full-page background with a subtle World Cup trophy watermark ── */
 [data-testid="stAppViewContainer"] {
     background:
@@ -390,21 +438,24 @@ WORLD_CUP_CSS = """
     z-index: 0;
     user-select: none;
 }
+"""
 
+    return f"""<style>
+{background_rule}
 /* ── Sidebar glass effect ── */
-[data-testid="stSidebar"] {
+[data-testid="stSidebar"] {{
     background: linear-gradient(180deg, rgba(10, 31, 46, 0.95) 0%, rgba(15, 26, 46, 0.95) 100%);
     border-right: 1px solid rgba(255, 215, 0, 0.15);
-}
+}}
 
 /* ── Main content area ── */
-[data-testid="stAppViewBlockContainer"] {
+[data-testid="stAppViewBlockContainer"] {{
     position: relative;
     z-index: 1;
-}
+}}
 
 /* ── Chat message styling ── */
-[data-testid="stChatMessage"] {
+[data-testid="stChatMessage"] {{
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 215, 0, 0.1);
     border-radius: 12px;
@@ -412,38 +463,38 @@ WORLD_CUP_CSS = """
     margin-bottom: 8px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-}
+}}
 
 /* ── User chat bubble ── */
-[data-testid="stChatMessage"][aria-label*="user"] {
+[data-testid="stChatMessage"][aria-label*="user"] {{
     background: rgba(255, 215, 0, 0.06);
     border-color: rgba(255, 215, 0, 0.25);
-}
+}}
 
 /* ── Assistant chat bubble ── */
-[data-testid="stChatMessage"][aria-label*="assistant"] {
+[data-testid="stChatMessage"][aria-label*="assistant"] {{
     background: rgba(30, 144, 255, 0.06);
     border-color: rgba(30, 144, 255, 0.2);
-}
+}}
 
 /* ── Chat input field ── */
-[data-testid="stChatInput"] textarea {
+[data-testid="stChatInput"] textarea {{
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 10px;
     color: #e0e0e0;
-}
+}}
 
 /* ── Title & captions ── */
-h1, h2, h3 {
+h1, h2, h3 {{
     color: #f0c040 !important;
-}
-h1 {
+}}
+h1 {{
     text-shadow: 0 0 20px rgba(255, 215, 0, 0.3);
-}
+}}
 
 /* ── Agent badge in sidebar ── */
-.agent-badge {
+.agent-badge {{
     display: inline-block;
     background: rgba(255, 215, 0, 0.12);
     border: 1px solid rgba(255, 215, 0, 0.3);
@@ -451,42 +502,42 @@ h1 {
     padding: 4px 10px;
     font-size: 0.85em;
     color: #f0c040;
-}
+}}
 
 /* ── Countdown timer ── */
-.wc-countdown {
+.wc-countdown {{
     text-align: center;
     padding: 12px 16px;
     margin: 8px 0 16px 0;
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.1) 0%, rgba(255, 215, 0, 0.04) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 12px;
-}
-.wc-countdown .days-left {
+}}
+.wc-countdown .days-left {{
     font-size: 2.4em;
     font-weight: 800;
     color: #f0c040;
     line-height: 1.1;
-}
-.wc-countdown .countdown-label {
+}}
+.wc-countdown .countdown-label {{
     font-size: 0.85em;
     color: #aaa;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-}
+}}
 
 /* ── Star confidence ratings ── */
-.confidence-stars {
+.confidence-stars {{
     display: inline-flex;
     gap: 2px;
     font-size: 1.1em;
     margin-top: 6px;
-}
-.confidence-stars .star-filled { color: #f0c040; }
-.confidence-stars .star-empty  { color: rgba(255, 255, 255, 0.15); }
+}}
+.confidence-stars .star-filled {{ color: #f0c040; }}
+.confidence-stars .star-empty  {{ color: rgba(255, 255, 255, 0.15); }}
 
 /* ── Player image card (inline in chat) ── */
-.player-card {
+.player-card {{
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -496,28 +547,28 @@ h1 {
     padding: 6px 10px 6px 6px;
     margin: 3px 4px 3px 0;
     vertical-align: middle;
-}
-.player-card img {
+}}
+.player-card img {{
     width: 36px;
     height: 36px;
     border-radius: 50%;
     object-fit: cover;
     border: 2px solid rgba(255, 215, 0, 0.3);
-}
+}}
 
 /* ── Bouncing football animation ── */
-@keyframes bounceAcross {
-    0%   { left: -60px; bottom: 8%; }
-    15%  { left: 12%; bottom: 14%; }
-    30%  { left: 28%; bottom: 6%; }
-    45%  { left: 44%; bottom: 12%; }
-    60%  { left: 60%; bottom: 7%; }
-    75%  { left: 76%; bottom: 13%; }
-    90%  { left: 92%; bottom: 5%; }
-    100% { left: 105%; bottom: 10%; }
-}
+@keyframes bounceAcross {{
+    0%   {{ left: -60px; bottom: 8%; }}
+    15%  {{ left: 12%; bottom: 14%; }}
+    30%  {{ left: 28%; bottom: 6%; }}
+    45%  {{ left: 44%; bottom: 12%; }}
+    60%  {{ left: 60%; bottom: 7%; }}
+    75%  {{ left: 76%; bottom: 13%; }}
+    90%  {{ left: 92%; bottom: 5%; }}
+    100% {{ left: 105%; bottom: 10%; }}
+}}
 
-.wc-bouncing-ball {
+.wc-bouncing-ball {{
     position: fixed;
     bottom: 8%;
     left: -60px;
@@ -528,10 +579,10 @@ h1 {
     animation: bounceAcross 14s linear infinite;
     opacity: 0.18;
     filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
-}
+}}
 
 /* ── Subtle football-pattern dots overlay ── */
-[data-testid="stAppViewContainer"]::after {
+[data-testid="stAppViewContainer"]::after {{
     content: "";
     position: fixed;
     top: 0;
@@ -545,24 +596,31 @@ h1 {
     background-size: 80px 80px, 100px 100px, 120px 120px;
     pointer-events: none;
     z-index: 0;
-}
+}}
 
 /* ── Scrollbar ── */
-::-webkit-scrollbar {
+::-webkit-scrollbar {{
     width: 8px;
-}
-::-webkit-scrollbar-track {
+}}
+::-webkit-scrollbar-track {{
     background: rgba(255, 255, 255, 0.02);
-}
-::-webkit-scrollbar-thumb {
+}}
+::-webkit-scrollbar-thumb {{
     background: rgba(255, 215, 0, 0.15);
     border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
+}}
+::-webkit-scrollbar-thumb:hover {{
     background: rgba(255, 215, 0, 0.3);
-}
+}}
 </style>
 """
+
+
+# ── Module-level CSS accessor (lazy-generated, replaces old WORLD_CUP_CSS constant) ──
+
+def get_world_cup_css() -> str:
+    """Return the full World Cup CSS, with trophy background image embedded."""
+    return _build_world_cup_css()
 
 
 def world_cup_header_html() -> str:
