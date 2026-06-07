@@ -36,8 +36,8 @@ class OrchestratorState(TypedDict):
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-_INTENTS = ["news", "sentiment", "data", "prediction", "chat"]
-_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat"]
+_INTENTS = ["news", "sentiment", "data", "prediction", "chat", "rules"]
+_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]
 
 _INTENT_PROMPT = """\
 You are a routing manager for a football assistant.
@@ -50,6 +50,7 @@ Routing policy:
 - `prediction`: user asks for forecast, probability, odds, who will win.
 - `sentiment`: user asks fan sentiment, public opinion, social reaction.
 - `news`: user asks for latest updates, headlines, rumours, transfers, injuries from media/web.
+- `rules`: user asks about FIFA World Cup rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, any tournament procedures or official regulations.
 - `chat`: generic conversation, ambiguous football talk, greetings, or any request that does not clearly fit above.
 
 Conversation context (earlier turns, if any):
@@ -236,6 +237,11 @@ def _run_chat(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
+def _run_rules(state: OrchestratorState) -> dict[str, Any]:
+    from src.agents.rules_agent import run_structured as run_rules
+    return run_rules(_build_contextual_user_message(state))
+
+
 def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
     runners = {
@@ -244,6 +250,7 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
         "prediction": _run_prediction,
         "bigquery": _run_bigquery,
         "chat": _run_chat,
+        "rules": _run_rules,
     }
 
     outputs: dict[str, dict[str, Any]] = {}

@@ -13,7 +13,7 @@ from langchain_openai import ChatOpenAI
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat"]
+AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]
 
 _PLANNER_PROMPT = """\
 You are a planning agent for a football assistant.
@@ -29,11 +29,13 @@ Available agents:
 - prediction: win/draw/loss probabilities and match forecasts.
 - bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
 - chat: generic conversation only.
+- rules: official FIFA World Cup 2026 rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, financial provisions. Use this for ANY question about tournament rules, regulations, or procedures.
 
 Rules:
 - bigquery is the single source of truth for all structured football data. Always include it for any data question.
 - If the user asks for predictions, include prediction and bigquery.
 - If the user asks for news or sentiment, include the corresponding specialist.
+- If the user asks about rules, regulations, competition format, disciplinary rules, protests, cards, eligibility, or any FIFA procedure, use the rules agent.
 - Use chat only for generic conversation with no data need.
 - Never select more than 2 agents unless truly necessary.
 - Return JSON only.
@@ -79,6 +81,8 @@ def _fallback_plan(query: str) -> dict[str, Any]:
         agents = ["sentiment"]
     elif any(term in q for term in ("fixture", "match", "result", "standings", "venue", "referee", "lineup")):
         agents = ["bigquery"]
+    elif any(term in q for term in ("rule", "regulation", "format", "yellow card", "red card", "penalty", "extra time", "protest", "disciplinary", "eligibility", "squad", "kit", "doping", "award", "trophy", "substitute", "var", "offsides", "handball")):
+        agents = ["rules"]
     else:
         agents = ["chat"]
 
