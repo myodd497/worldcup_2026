@@ -50,6 +50,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
+import pandas as pd
+
 from src.tools.api_usage_tracker import get_api_usage_snapshot, reset_api_usage
 from src.tools import bigquery_tools as _bq_tools
 
@@ -108,15 +110,20 @@ def _compute_since_date() -> str:
           AND trigger IN ('github_action', 'fastapi_startup')
         """
         df = _bq_tools.run_query(sql)
-        if not df.empty and df["last_success_date"].iloc[0] is not None:
+        if not df.empty:
             last_dt = df["last_success_date"].iloc[0]
-            # +1 day so we re-process the day after the last success
-            # (covers partial failures in the same day)
-            since = last_dt + timedelta(days=1)
-            logger.info(
-                "_compute_since_date: last success date=%s → since=%s", last_dt, since
-            )
-            return since.isoformat()
+            # Guard against NULL (no rows) which pandas surfaces as NaT/None.
+            if last_dt is not None and not pd.isna(last_dt):
+                # Convert pandas Timestamp → datetime.date if needed.
+                if hasattr(last_dt, "date") and not isinstance(last_dt, date):
+                    last_dt = last_dt.date()
+                # +1 day so we re-process the day after the last success
+                # (covers partial failures in the same day)
+                since = last_dt + timedelta(days=1)
+                logger.info(
+                    "_compute_since_date: last success date=%s → since=%s", last_dt, since
+                )
+                return since.isoformat()
     except Exception as exc:
         logger.warning("Could not query etl_run_status for since_date: %s", exc)
 
