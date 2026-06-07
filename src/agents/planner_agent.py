@@ -24,7 +24,7 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model=_MODEL, temperature=0)
+        _llm = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
     return _llm
 
 
