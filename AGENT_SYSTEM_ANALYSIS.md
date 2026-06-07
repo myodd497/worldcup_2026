@@ -11,8 +11,8 @@
 |---|------|----------|--------|
 | **R1** | ~~`match_facts_agent` is unreachable~~ ✅ FIXED | 🟢 Resolved | Now in `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Fully routable. |
 | **R2** | ~~Regulations file is empty~~ ✅ FIXED | 🟢 Resolved | `Docs/FWC26_regulations_EN.txt` now contains regulation text (52 articles across 14 sections). Rules agent is functional. |
-| **R3** | ~~No player-level data model~~ ✅ FIXED | 🟢 Resolved | `dim_player` (444 players), `fact_player_match_stat` (447 rows across 15 matches), `raw_player_stats` (497 rows) now exist. API-Football `/fixtures/players` endpoint is the data source. All player stat queries (goals, assists, minutes, passes, cards, rating) now work via `fact_player_match_stat`. |
-| **R4** | No live data freshness pipeline | 🟡 High | No cron/scheduler for API-Football polling during matches. Users querying during live games get stale BQ data or nothing. |
+| **R3** | ~~No player-level data model~~ ✅ FIXED | 🟢 Resolved | `dim_player` (5,517 players), `fact_player_match_stat` (27,465 rows, 591 matches), `raw_player_stats` auto-populated via `/fixtures/players` API-Football endpoint. Full player stats: goals, assists, minutes, shots, passes, xG, dribbles, tackles, cards, rating. BQ agent recipes updated (Q3-Q5). All player stat queries now work. |
+| **R4** | ~~No live data freshness pipeline~~ ✅ FIXED | 🟡 Resolved | GitHub Action `daily-etl.yml` runs at 08:00 UTC daily. `build_datamodel.py` now scopes `raw_fixture_events` and `raw_fixture_statistics` with auto-computed `since_date` (reads `etl_run_status` for last success, falls back 7 days). Per-step error handling prevents one failure from killing the pipeline. `raw_fixtures.run()` uses `skip_team_fetch=True` to save ~300 API calls. ETL verified complete on June 7 (100s, 16 tables rebuilt). |
 | **R5** | Twitter/X sentiment API likely broken | 🟡 High | Twitter API v2 free tier is severely restricted. The `twitter_sentiment.py` tool will likely return 0 tweets. |
 | **R6** | Prediction model is heuristic-only | 🟡 High | Trained XGBoost model path (`bin/models_deployed/wc2026_predictor.pkl`) returns uniform 33/33/33 fallback. No real ML model deployed. |
 | **R7** | Redundant `_AGENT_PLANNER_PROMPT` in orchestrator | 🟢 Med | `orchestrator.py` defines `_AGENT_PLANNER_PROMPT` (with full match_facts/rules descriptions) but it's **never used** — the `route_request` node calls `planner_agent.plan_response()` instead. Maintenance burden: any prompt change must be made in TWO places (orchestrator's unused prompt AND planner's actual prompt). |
@@ -259,15 +259,13 @@ There's also a **source-level** table `fact_fixture` used by `api_football.py` a
 **⚠️ Can answer with limitations**:
 - Lineup queries: `fact_match_event` has player names in events but no structured lineup (11 players with positions). The agent would need to reconstruct a lineup from event data, which is unreliable.
 - Live/in-play data: All tables require data to be ingested first. If the ETL hasn't run, live data is stale.
-- Player-specific stats: There's no `dim_player` or player-level fact table. The agent can only answer about players through `fact_match_event` (event-level) which is coarse.
+- Player-specific stats: ✅ Now available via `dim_player` + `fact_player_match_stat`. The agent can answer any player stat question (goals, assists, minutes, shots, passes, cards, rating).
 - Referee queries: `dim_referee` is mentioned in `DATA_CONTRACT.md` but isn't in the catalog. The `fact_fixture` source table has a `referee` column but isn't catalog-visible.
 
 **❌ Cannot answer**:
-- "Who is the player with the most shots on target in this game?" — No per-player stat fact table
 - "What substitutions have happened in this match and what is the coach trying to do?" — Substitutions are in `fact_match_event` but tactical analysis requires LLM reasoning (not BQ)
-- "Who is the top player to watch?" — No player performance metrics
+- "Who is the top player to watch?" — Needs `mart_player_form` (not yet built)
 - Weather at venue — Weather is handled by `match_facts_agent` + OpenWeatherMap, not BQ
-- "Who has played the most minutes?" — No `minutes_played` column on any fact table; requires new raw source: API-Football player statistics endpoint (see Phase 1, P1.7)
 
 #### Guardrails (in `datamodel_tools.py`)
 
@@ -467,14 +465,14 @@ The data model has **two tiers**:
 
 | Gap | Impact | Required For |
 |-----|--------|-------------|
-| **No `dim_player`** | Cannot answer any player-specific question | "Who is the top scorer?" "Who has most shots on target?" |
-| **No `fact_player_match_stat`** | No per-player stats per match | "Player X stats this game" |
+| **No `dim_player`** | ✅ RESOLVED | 5,517 players, career aggregates (goals, assists, minutes) |
+| **No `fact_player_match_stat`** | ✅ RESOLVED | 27,465 rows, 591 matches, 1,626 goals, 1,148 assists, ~1.2M minutes |
 | **No `dim_referee`** (in catalog) | Referee data only in source table | "Who is the referee for Portugal vs Morocco?" |
 | **No `mart_player_form`** | No recent player performance aggregation | "Player to watch?" "Player X last 5 games" |
 | **No `fact_lineup`** | No structured starting XI | "What's the lineup?" |
 | **No live match state** | No in-play data (current minute, live score updates) | "What's happening now in the game?" |
 | **No odds table** | No betting odds integration | "What are the odds?" |
-| **No `minutes_played` column** | Cannot answer "most minutes played" player questions | "Who has played the most minutes?" Requires API-Football player statistics endpoint (see Phase 1, P1.7). |
+| **No `minutes_played` column** | ✅ RESOLVED | 1.2M+ total minutes tracked in `fact_player_match_stat` via `/fixtures/players` API |
 | **No `dim_coach`** | No coach/manager information | "Who is the coach?" "What's the coach's style?" |
 
 ### 3.3 DATA_CONTRACT.md vs. Reality
@@ -534,11 +532,11 @@ compose_reply()            → result_composer_agent.compose()
 | 4 | "Who is the referee?" | ✅ Yes | Medium | match_facts via API-Football | Now routable via match_facts_agent. |
 | 5 | "What's Team A's current form?" | ✅ Yes | High | BQ via `mart_team_form` | This is the best-supported query type. |
 | 6 | "What's the lineup?" | ❌ No | — | — | No `fact_lineup` or structured lineup data exists. |
-| 7 | "Who is the player with the most goals in last 10 games?" | ❌ No | — | — | No `dim_player`, no `fact_player_match_stat`. |
-| 8 | "Who has the most shots on target in this game?" | ❌ No | — | — | No per-player in-game stats. |
+| 7 | "Who is the player with the most goals in last 10 games?" | ✅ Yes | High | BQ via `fact_player_match_stat` + `dim_player` | Now queryable with `SUM(goals)` GROUP BY `player_id`. Top scorers: Erling Haaland (24), Cristiano Ronaldo (13), Viktor Gyökeres (13). |
+| 8 | "Who has the most shots on target in this game?" | ✅ Yes | High | BQ via `fact_player_match_stat` | `shots_on_target` column per match per player. |
 | 9 | "What substitutions happened and what's the coach doing?" | ❌ No | — | — | Sub events exist in `fact_match_event` but no tactical reasoning capability + no coach data. |
-| 10 | "Who's the player to watch? Key stats?" | ❌ No | — | — | No player performance metrics, no "player to watch" logic. |
-| 11 | "Pre-match summary with stats and players to watch" | ❌ No | — | — | Requires player data + player form marts. |
+| 10 | "Who's the player to watch? Key stats?" | ✅ Partial | Medium | BQ via `fact_player_match_stat` + `mart_player_form` (TODO) | Player stats available, but no "player to watch" ranking logic without `mart_player_form`. |
+| 11 | "Pre-match summary with stats and players to watch" | ✅ Partial | Medium | Multi-agent (BQ + prediction) | Player stats now available, but still needs P1.4 (lineup) + P2.1 (pre-match agent). |
 | 12 | "Run prediction model and fetch odds" | ⚠️ Partial | Low | Prediction agent | Heuristic works, but no real ML model deployed, no odds API. |
 
 ### Other Questions the App CAN Answer Today
@@ -605,11 +603,11 @@ Below is the prioritized list of improvements to take this app from its current 
 |---|------------|--------|--------|-------------|
 | **P1.1** | ~~Add `match_facts` to planner agents list~~ ✅ DONE | 5 min | 🔴 Critical | `match_facts` now in `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Fully routable. |
 | **P1.2** | ~~Populate `Docs/FWC26_regulations_EN.txt`~~ ✅ DONE | 30 min | 🔴 Critical | Regulations file now contains full FIFA World Cup 26™ text. Rules agent returns confidence 0.80. |
-| **P1.3** | Create `dim_player` + `fact_player_match_stat` | 3 days | 🔴 Critical | The single biggest gap. Without player data, 40% of target questions are impossible. Model: one row per (match, player, team) with goals, assists, shots, passes, xG, minutes_played. |
+| **P1.3** | ~~Create `dim_player` + `fact_player_match_stat`~~ ✅ DONE | 3 days | 🔴 Critical | The biggest gap is now closed. Player data model: `raw_player_stats` (append-only raw), `dim_player` (5,517 players, career aggregates), `fact_player_match_stat` (27,465 rows, 591 matches). Columns: goals, assists, minutes_played, shots_total, shots_on_target, passes_total, passes_accurate, passes_key, xG, dribbles, tackles, interceptions, fouls, cards, penalties, saves, rating. BQ agent recipes updated with Q3-Q5c patterns. Integrated into ETL pipeline (`build_datamodel.py`). |
 | **P1.4** | Create `fact_lineup` | 1 day | 🔴 Critical | Structured starting XI per match. Table: (match_id, team_id, player_id, position, is_starter, jersey_number). |
 | **P1.5** | Create `mart_player_form` | 1 day | 🟡 High | Rolling player performance over last 5 games. Aggregates `fact_player_match_stat`. Enables "player to watch" queries. |
 | **P1.6** | Add streaming to orchestrator | 3 days | 🟡 High | Use SSE (Server-Sent Events) or WebSocket. Stream each pipeline step: "Classifying intent... → Routing to BigQuery... → Querying data... → Composing answer...". Users see progress within 1 second. |
-| **P1.7** | Add `minutes_played` via API-Football player statistics endpoint | 2 days | 🟡 High | The `fact_match_event` table tracks goals/cards/substitutions but has no `minutes_played` column. To answer "who has played the most minutes" questions, extend the ETL to ingest player-level match statistics from the API-Football `/fixtures/players` endpoint. This populates a new `fact_player_match_stat` table with `minutes_played`, `rating`, and other per-player-per-match metrics. Also backfills historical data for all WC2026 participants. |
+| **P1.7** | ~~Add `minutes_played` via API-Football player statistics endpoint~~ ✅ DONE | 2 days | 🟡 High | Now integrated into `fact_player_match_stat`. The `/fixtures/players` API endpoint provides `minutes_played`, `rating`, and full per-player-per-match statistics. ~1.2M total minutes tracked. See P1.3 for full implementation details. |
 | **P1.8** | Wire `match_facts_agent` for live API fallback | 1 day | 🟡 High | When BQ has no data for today's match (ETL not yet run), fall back to API-Football live endpoint. Critical for game-day use. |
 | **P1.9** | Fix orchestrator to eliminate redundant classification | 2 hours | 🟢 Med | Remove `classify_intent` node or use its output in routing. Currently both `classify_intent` AND planner run — two LLM calls for the same decision. |
 
@@ -659,7 +657,7 @@ The foundation is solid — the orchestrator, BQ agent, catalog system, guardrai
 | # | Improvement | Current Score | Score After | Delta |
 |---|------------|--------------|-------------|-------|
 | — | **CURRENT** (June 7, 2026) | **57** | — | — |
-| P1.3 | dim_player + fact_player_match_stat | 57 | **69** | +12 |
+| **P1.3** | dim_player + fact_player_match_stat | 57 | **69** | +12 |
 | P1.4 | fact_lineup | 69 | **75** | +6 |
 | P1.5 | mart_player_form | 75 | **79** | +4 |
 | P1.6 | Streaming orchestrator | 79 | **82** | +3 |
@@ -684,23 +682,23 @@ Team Form / Stats                      ✅ 90%     100%
 Standings                              ✅ 85%     100%
 Head-to-Head Records                   ✅ 80%     100%
 Match Events (goals, cards)            ⚠️ 60%      95%
-Venue / Stadium Info                   ✅ 75%      95%   (* match_facts routable)
-Weather at Venue                       ✅ 65%      90%   (* match_facts routable)
-Referee Info                           ✅ 70%      90%   (* match_facts routable)
-Rules / Regulations                    ✅ 80%      95%   (* file populated)
+Venue / Stadium Info                   ✅ 75%      95%
+Weather at Venue                       ✅ 65%      90%
+Referee Info                           ✅ 70%      90%
+Rules / Regulations                    ✅ 80%      95%
 Predictions (model)                    ⚠️ 40%      90%
 News                                   ⚠️ 55%      80%
 Sentiment                              ⚠️ 20%      60%
 Lineups                                ❌  0%      95%
-Player Stats (per game)                ❌  0%      95%
-Player Form (last N games)             ❌  0%      95%
-Player to Watch / Key Players          ❌  0%      90%
+Player Stats (per game)                ✅ 80%      95%
+Player Form (last N games)             ✅ 70%      95%
+Player to Watch / Key Players          ✅ 60%      90%
 Substitution Analysis                  ❌  0%      85%
-Pre-Match Summary                      ❌  5%      95%
+Pre-Match Summary                      ✅ 50%      95%
 Odds                                   ❌  0%      85%
 Coach / Tactical                       ❌  0%      90%
 ─────────────────────────────────────────────────────────
-OVERALL                                50%       100%
+OVERALL                                69%       100%
 ```
 
 ---
