@@ -92,7 +92,7 @@ _TEAM_ALIASES: dict[str, str] = {
 @lru_cache(maxsize=1)
 def _load_teams() -> tuple[dict, ...]:
     """Load all teams from dim_team once per process."""
-    sql = f"SELECT team_id, team_name, country_name, is_wc2026_participant FROM {fqn('dim_team')}"
+    sql = f"SELECT team_id, team_name, is_wc2026_participant FROM {fqn('dim_team')}"
     try:
         df = run_query(sql)
     except Exception as exc:
@@ -103,10 +103,8 @@ def _load_teams() -> tuple[dict, ...]:
         rows.append({
             "team_id": int(r["team_id"]),
             "team_name": str(r.get("team_name") or ""),
-            "country_name": str(r.get("country_name") or ""),
             "is_wc2026_participant": bool(r.get("is_wc2026_participant") or False),
             "_norm_name": _norm(r.get("team_name") or ""),
-            "_norm_country": _norm(r.get("country_name") or ""),
         })
     return tuple(rows)
 
@@ -130,18 +128,19 @@ def resolve_team(name: str) -> ResolvedEntity:
     scored: list[tuple[float, dict]] = []
     for t in teams:
         nname = t["_norm_name"]
-        ncountry = t["_norm_country"]
         score = 0.0
-        if q == nname or q == ncountry:
+        if not nname:
+            continue
+        if q == nname:
             score = 1.0
-        elif nname.startswith(q) or (ncountry and ncountry.startswith(q)):
+        elif nname.startswith(q):
             score = 0.92
-        elif q in nname.split() or (ncountry and q in ncountry.split()):
+        elif q in nname.split():
             score = 0.88
-        elif q in nname or (ncountry and q in ncountry):
+        elif q in nname:
             score = 0.80
         else:
-            sim = max(_similarity(q, nname), _similarity(q, ncountry) if ncountry else 0.0)
+            sim = _similarity(q, nname)
             if sim >= 0.75:
                 score = sim * 0.85
         if score > 0:
@@ -185,7 +184,7 @@ def resolve_team(name: str) -> ResolvedEntity:
 def _load_players() -> tuple[dict, ...]:
     """Load all players from dim_player once per process."""
     sql = f"""
-        SELECT player_id, player_name, team_id, team_name, is_wc2026_participant
+        SELECT player_id, player_name, primary_team_id, primary_team_name, is_wc2026_participant
         FROM {fqn('dim_player')}
     """
     try:
@@ -198,8 +197,8 @@ def _load_players() -> tuple[dict, ...]:
         rows.append({
             "player_id": int(r["player_id"]),
             "player_name": str(r.get("player_name") or ""),
-            "team_id": int(r["team_id"]) if r.get("team_id") is not None else None,
-            "team_name": str(r.get("team_name") or ""),
+            "team_id": int(r["primary_team_id"]) if r.get("primary_team_id") is not None else None,
+            "team_name": str(r.get("primary_team_name") or ""),
             "is_wc2026_participant": bool(r.get("is_wc2026_participant") or False),
             "_norm_name": _norm(r.get("player_name") or ""),
         })
