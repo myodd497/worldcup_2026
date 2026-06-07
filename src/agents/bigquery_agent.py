@@ -195,7 +195,7 @@ def _build_user_prompt(question: str, conversation_context: str | None) -> str:
 
 
 def _make_llm() -> ChatOpenAI:
-    return ChatOpenAI(model=_MODEL_NAME, temperature=0).bind_tools(_TOOLS_SCHEMA)
+    return ChatOpenAI(model=_MODEL_NAME, temperature=0, max_retries=6, timeout=60).bind_tools(_TOOLS_SCHEMA)
 
 
 def _run_agent(question: str, conversation_context: str | None = None) -> tuple[str, list[dict[str, Any]]]:
