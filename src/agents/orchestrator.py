@@ -34,7 +34,18 @@ class OrchestratorState(TypedDict):
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client so that environment variables (e.g.
+    OPENAI_API_KEY) are available at call time even when set after import.
+    """
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
+
 
 _INTENTS = ["news", "sentiment", "data", "prediction", "chat", "rules", "match_facts"]
 _AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]
@@ -146,7 +157,7 @@ def classify_intent(state: OrchestratorState) -> OrchestratorState:
         context=_format_recent_history(state.get("messages", [])),
         message=state["user_message"],
     )
-    intent = _llm.invoke(prompt).content.strip().lower()
+    intent = _get_llm().invoke(prompt).content.strip().lower()
     if intent not in _INTENTS:
         intent = "chat"
 
@@ -227,7 +238,7 @@ def _run_bigquery(state: OrchestratorState) -> dict[str, Any]:
 
 
 def _run_chat(state: OrchestratorState) -> dict[str, Any]:
-    answer = _llm.invoke(
+    answer = _get_llm().invoke(
         _CHAT_PROMPT.format(
             message=state["user_message"],
             context=_format_recent_history(state.get("messages", [])),
@@ -361,7 +372,7 @@ def aggregate_outputs_node(state: OrchestratorState) -> OrchestratorState:
         )
 
         try:
-            merged_answer = _llm.invoke(synthesis_prompt).content.strip()
+            merged_answer = _get_llm().invoke(synthesis_prompt).content.strip()
         except Exception:
             merged_answer = str(primary_payload.get("answer", "I could not generate an answer."))
 

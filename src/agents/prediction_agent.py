@@ -2,11 +2,21 @@
 Prediction Agent — returns win/draw/loss probabilities for a match.
 Loads the trained XGBoost model and augments the output with LLM reasoning.
 """
+from __future__ import annotations
+
 from src.models.predict import predict_match
 from langchain_openai import ChatOpenAI
 
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    return _llm
 
 
 def run_structured(query: str) -> dict:
@@ -30,7 +40,7 @@ def run_structured(query: str) -> dict:
         f"{home} win {p_home:.0f}%, draw {p_draw:.0f}%, {away} win {p_away:.0f}%. "
         f"Give a 2-sentence tactical analysis explaining why. Be concise."
     )
-    reasoning = _llm.invoke(reasoning_prompt).content.strip()
+    reasoning = _get_llm().invoke(reasoning_prompt).content.strip()
 
     answer = (
         f"*Prediction: {home} vs {away}*\n"

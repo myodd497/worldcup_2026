@@ -11,7 +11,15 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
 
 
 def review_code(code: str) -> dict[str, str]:
@@ -39,7 +47,7 @@ def review_code(code: str) -> dict[str, str]:
         f"Code:\n```python\n{code}\n```\n"
         f"Reply with: APPROVED or REJECTED, followed by a one-sentence reason."
     )
-    llm_review = _llm.invoke(llm_prompt).content.strip()
+    llm_review = _get_llm().invoke(llm_prompt).content.strip()
     approved = llm_review.upper().startswith("APPROVED")
 
     return {

@@ -90,7 +90,15 @@ def _system_prompt() -> str:
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -124,7 +132,7 @@ def run_structured(query: str) -> dict:
             {"role": "system", "content": _system_prompt()},
             {"role": "user", "content": query},
         ]
-        answer = _llm.invoke(messages).content.strip()
+        answer = _get_llm().invoke(messages).content.strip()
 
         # Confidence: moderate-high since the LLM has the full regulations
         # and gpt-4o-mini is reliable for retrieval tasks.

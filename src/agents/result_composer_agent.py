@@ -9,7 +9,15 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
 
 
 def _confidence_line(score: float, label: str) -> str:
@@ -42,7 +50,7 @@ def _format_final_answer(
         "Raw assistant answer:\n"
         f"{raw_answer}"
     )
-    return _llm.invoke(prompt).content.strip()
+    return _get_llm().invoke(prompt).content.strip()
 
 
 def compose(

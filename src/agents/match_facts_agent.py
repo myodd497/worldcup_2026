@@ -17,7 +17,15 @@ from src.tools.news_search import search_news
 from src.tools.weather import get_venue_weather
 
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client."""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
 
 
 def _compact_excerpt(text: str, max_chars: int = 180) -> str:
@@ -141,7 +149,7 @@ def _summarise_web_hits(query: str, web_hits: list[dict]) -> str | None:
             "Web evidence:\n"
             + merged[:5000]
         )
-        summary = _llm.invoke(prompt).content.strip()
+        summary = _get_llm().invoke(prompt).content.strip()
         return summary or None
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -164,7 +172,7 @@ def _summarise_web_hits(query: str, web_hits: list[dict]) -> str | None:
             "Web evidence:\n"
             + merged[:5000]
         )
-        summary = _llm.invoke(prompt).content.strip()
+        summary = _get_llm().invoke(prompt).content.strip()
         return summary or None
 
     return "\n".join([f"- {line}" for line in picked])
@@ -199,7 +207,7 @@ def _fallback_answer(query: str, reason: str) -> dict:
                 "Titles:\n"
                 + "\n".join(title_lines)
             )
-            title_summary = _llm.invoke(prompt).content.strip()
+            title_summary = _get_llm().invoke(prompt).content.strip()
             return {
                 "answer": title_summary,
                 "confidence_score": 0.42,
@@ -221,7 +229,7 @@ def _fallback_answer(query: str, reason: str) -> dict:
         "If uncertain, state that this is a best-effort answer.\n\n"
         f"User question: {query}"
     )
-    llm_answer = _llm.invoke(llm_prompt).content.strip()
+    llm_answer = _get_llm().invoke(llm_prompt).content.strip()
     return {
         "answer": llm_answer,
         "confidence_score": 0.35,
@@ -314,7 +322,7 @@ def _llm_format_fixtures_answer(
         "Fixture rows (JSON):\n"
         f"{json.dumps(compact_rows, ensure_ascii=True)}"
     )
-    return _llm.invoke(prompt).content.strip()
+    return _get_llm().invoke(prompt).content.strip()
 
 
 def _template_fixtures_answer(query: str, source: str, fixtures: list[dict]) -> str:

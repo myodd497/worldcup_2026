@@ -11,7 +11,17 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 
-_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    """Lazy-initialize the LLM client so that environment variables (e.g.
+    OPENAI_API_KEY) are available at call time even when set after import.
+    """
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return _llm
 
 AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]
 
@@ -108,7 +118,7 @@ def plan_response(
     )
 
     try:
-        raw = _llm.invoke(prompt).content.strip()
+        raw = _get_llm().invoke(prompt).content.strip()
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("Planner output was not a JSON object")

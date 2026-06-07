@@ -22,11 +22,17 @@ def _hydrate_env_from_streamlit_secrets() -> None:
     Also converts [gcp_service_account] TOML section into a JSON env var used by
     src.tools.bigquery_tools._client.
     """
-    for key, value in st.secrets.items():
+    try:
+        secrets = st.secrets
+    except Exception:
+        # No secrets file found — skip hydration gracefully.
+        return
+
+    for key, value in secrets.items():
         if isinstance(value, (str, int, float, bool)):
             os.environ[key] = str(value)
 
-    gcp_info = st.secrets.get("gcp_service_account")
+    gcp_info = secrets.get("gcp_service_account")
     if gcp_info:
         os.environ["GOOGLE_SERVICE_ACCOUNT_INFO"] = json.dumps(dict(gcp_info))
 
