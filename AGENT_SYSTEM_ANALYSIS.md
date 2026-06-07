@@ -5,17 +5,17 @@
 
 ---
 
-## ⚠️ Current Critical Risks (June 7, 2026)
+## ⚠️ Current Critical Risks (June 7, 2026) — UPDATED
 
 | # | Risk | Severity | Detail |
 |---|------|----------|--------|
-| **R1** | `match_facts_agent` is unreachable | 🔴 Critical | Exists in orchestrator's `runners` dict but missing from planner's `AVAILABLE_AGENTS`. All match-specific queries (lineups, venue, referee, weather) route to BQ instead, which lacks live API data. One-line fix pending. |
-| **R2** | Regulations file is empty (0 bytes) | 🔴 Critical | `Docs/FWC26_regulations_EN.txt` exists but contains no text. The rules agent returns confidence 0.1 for all queries. Non-functional until populated. |
+| **R1** | ~~`match_facts_agent` is unreachable~~ ✅ FIXED | 🟢 Resolved | Now in `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Fully routable. |
+| **R2** | ~~Regulations file is empty~~ ✅ FIXED | 🟢 Resolved | `Docs/FWC26_regulations_EN.txt` now contains regulation text (52 articles across 14 sections). Rules agent is functional. |
 | **R3** | No player-level data model | 🔴 Critical | No `dim_player`, `fact_player_match_stat`, `fact_lineup`, or `mart_player_form`. ~40% of target questions are impossible. |
 | **R4** | No live data freshness pipeline | 🟡 High | No cron/scheduler for API-Football polling during matches. Users querying during live games get stale BQ data or nothing. |
 | **R5** | Twitter/X sentiment API likely broken | 🟡 High | Twitter API v2 free tier is severely restricted. The `twitter_sentiment.py` tool will likely return 0 tweets. |
 | **R6** | Prediction model is heuristic-only | 🟡 High | Trained XGBoost model path (`bin/models_deployed/wc2026_predictor.pkl`) returns uniform 33/33/33 fallback. No real ML model deployed. |
-| **R7** | Redundant planner prompts | 🟢 Med | `orchestrator.py` defines `_AGENT_PLANNER_PROMPT` (unused) AND calls `planner_agent.py`. Two LLM call path for the same routing decision (`classify_intent` + `route_request`). |
+| **R7** | Redundant `_AGENT_PLANNER_PROMPT` in orchestrator | 🟢 Med | `orchestrator.py` defines `_AGENT_PLANNER_PROMPT` (with full match_facts/rules descriptions) but it's **never used** — the `route_request` node calls `planner_agent.plan_response()` instead. Maintenance burden: any prompt change must be made in TWO places (orchestrator's unused prompt AND planner's actual prompt). |
 | **R8** | DATA_CONTRACT.md is stale | 🟢 Med | References gold views (`v_team_recent_form`, `v_head_to_head`) that don't exist. Actual implementation uses marts. `dim_referee` mentioned but not in catalog. |
 | **R9** | No streaming — users wait 15-30s | 🟡 High | 6-node pipeline blocks until complete. For live-game companion, this is a UX killer. |
 
@@ -89,8 +89,8 @@ User Message (WhatsApp / Streamlit / Web)
 - **6-node pipeline**: `classify_intent → route_request → execute_agents_node → aggregate_outputs_node → score_confidence → compose_reply`. Still a straight pipeline — no conditional branching.
 - **Multi-agent execution**: The orchestrator now supports 1–3 agents selected by the planner. Agents run **sequentially** (not parallel), outputs collected into `agent_outputs` dict.
 - **BigQuery priority in aggregation**: `aggregate_outputs_node` ranks outputs by data source quality: bigquery=3 > api=1 > other=0. BigQuery-backed outputs always win when synthesizing multi-agent results.
-- **Planner now has `match_facts` keyword fallback** but `match_facts` is **NOT in `AVAILABLE_AGENTS`** list. All match-specific queries route to `bigquery` instead. The orchestrator DOES have a `_run_match_facts` runner — it's registered in the `runners` dict. This inconsistency means `match_facts_agent` is only reachable via orchestrator's `runners` dict but **never selected by the planner**.
-- **New: `rules` intent and agent** added to both `_INTENTS`, `_AGENTS` lists, planner's `AVAILABLE_AGENTS`, and orchestrator's `runners` dict. Fully routable.
+- **`match_facts` now fully routable**: Added to `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Match-specific queries (lineups, venue, referee, weather) now route to `match_facts_agent` with its API-Football live data and OpenWeatherMap integration.
+- **New: `rules` intent and agent** added to both `_INTENTS`, `_AGENTS` lists, planner's `AVAILABLE_AGENTS`, and orchestrator's `runners` dict. Fully routable. Regulations file now populated.
 - **No streaming**. The entire 6-node pipeline must complete before the user sees anything. For a fan watching a live game, waiting 15-30 seconds is a real concern.
 
 ---
@@ -112,16 +112,19 @@ User Message (WhatsApp / Streamlit / Web)
 
 **Issues & Risks**:
 
-- **[Severity: High]** `match_facts_agent` is defined as a runner (`_run_match_facts`) and registered in the `runners` dict but is **NOT in the planner's `AVAILABLE_AGENTS`** list. The planner can never select it. All match-facts queries route to `bigquery` instead. The orchestrator's `_run_match_facts` function is dead code. See P1.1 in Improvement Roadmap.
+- **[Severity: High — FIXED]** `match_facts_agent` is now in `_INTENTS`, `_AGENTS`, and the `runners` dict. The orchestrator can route to it. ✅
 - **[Severity: Med]** The graph is a straight pipeline — no conditional branching. The `intent` field from `classify_intent` is stored in state but **never used for routing decisions**. The `route_request` node calls the planner regardless of the intent classification. Two LLM calls for classification is wasteful.
 - **[Severity: Med]** `_AGENTS` list includes `"bigquery"` but the intent classifier uses `"data"` as the intent label (not `"bigquery"`). The planner bridges this disconnect, but it's fragile.
-- **[Severity: Low]** The orchestrator uses `gpt-4o-mini` for classification, planning, AND chat responses. For production, consider a faster/cheaper model for classification (a simple 6-way choice).
+- **[Severity: Med]** `_AGENT_PLANNER_PROMPT` is defined but **never used** (route_request calls `planner_agent.plan_response()` instead of using this prompt). Dead code that duplicates the planner's actual prompt.
+- **[Severity: Low]** The orchestrator uses `gpt-4o-mini` for classification, planning, AND chat responses. For production, consider a faster/cheaper model for classification (a simple 7-way choice).
 
 **New since last analysis**:
 - `_run_rules()` runner added — calls `rules_agent.run_structured()`
+- `_run_match_facts()` runner now reachable — `match_facts` added to `_INTENTS`, `_AGENTS`, and `runners` dict
+- `match_facts` added to `_INTENTS` (was 6, now 7): `["news", "sentiment", "data", "prediction", "chat", "rules", "match_facts"]`
+- `match_facts` added to `_AGENTS` (was 6, now 7): `["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]`
 - `selected_agents` list supports 1–3 agents (was single `selected_agent`)
 - `execute_agents_node` iterates over all selected agents, collects outputs into `agent_outputs` dict
-- `rules` added to both `_INTENTS` and `_AGENTS`
 
 ### 2.2 Planner Agent
 
@@ -137,14 +140,17 @@ User Message (WhatsApp / Streamlit / Web)
 
 **Issues & Risks**:
 
-- **[Severity: High]** `AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]` — **`match_facts` is missing**. This means queries like "What's the lineup for Portugal vs Morocco?" or "Who is the referee?" route to `bigquery` instead of `match_facts`. The `bigquery_agent` can answer these from the data model, but `match_facts_agent` has API-Football integration with live data that the gold model may not have yet. The orchestrator's `runners` dict DOES include `_run_match_facts` — so if `match_facts` were in `AVAILABLE_AGENTS`, it would work. This is a one-line fix.
+- **[Severity: High — FIXED]** `AVAILABLE_AGENTS` now includes `"match_facts"`. The full list is: `["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]`. Match-specific queries (lineups, venue, referee, weather) now correctly route to `match_facts_agent` with its API-Football live data.
 - **[Severity: Med]** The planner prompt says "Never select more than 2 agents unless truly necessary" but also says to include `prediction + bigquery` for prediction queries. For a question like "predict Portugal vs Morocco and give me recent news about both teams", it would need 3 agents (prediction, bigquery, news) but the planner would truncate to 2. The orchestrator's `selected_agents = cleaned[:3]` does allow up to 3, creating an inconsistency.
 - **[Severity: Low]** The planner has no concept of "the user just asked a follow-up." It treats every message independently. Context awareness is limited to the conversation history text passed in the prompt — no structured turn tracking.
+- **[Severity: Med]** `orchestrator.py` maintains its own duplicate `_AGENT_PLANNER_PROMPT` that is **never used** (the `route_request` node calls `planner_agent.plan_response()` instead). Any prompt change must be made in two places or the unused copy becomes misleading documentation.
 
 **Changes since last analysis**:
 - `rules` added to `AVAILABLE_AGENTS`
 - `rules` added to fallback keyword routing
-- `rules` added to planner prompt with description: "official FIFA World Cup 2026 rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, financial provisions"
+- `match_facts` added to `AVAILABLE_AGENTS` ✅
+- `match_facts` added to fallback keyword routing (lineup, referee, venue, weather, match events, player stats, head-to-head, h2h)
+- `match_facts` added to planner prompt with description: "live/structured match details — lineups, venue, referee, weather, match events, player stats, head-to-head from the API-Football external API"
 
 ### 2.3 BigQuery Agent
 
@@ -298,7 +304,7 @@ These guardrails are **excellent**. The allow-listing via the catalog is a parti
 
 **Issues & Risks**:
 
-- **[Severity: High]** This agent should be the **primary agent for all match-specific queries** (lineups, venue, referee, weather) but it's **not in the planner's agent list**. All those queries go to `bigquery_agent` instead.
+- **[Severity: High — FIXED]** This agent is now in the planner's `AVAILABLE_AGENTS` list. Match-specific queries (lineups, venue, referee, weather) will route here. ✅
 - **[Severity: Med]** The agent fetches web pages (`_fetch_page_snippet`) which takes 1-3 seconds per URL. For "today's matches," this could mean 3+ HTTP requests adding 5-9 seconds of latency.
 - **[Severity: Med]** Weather is only fetched for the first fixture when `wants_list=False`. For "today's matches" (list mode), no weather is fetched.
 - **[Severity: Low]** The `_normalise_fixture_with_season` function exists in both `match_facts_agent.py` (not used there) and `api_football.py`. Duplication.
@@ -409,7 +415,7 @@ User: "Predict Portugal vs Morocco"
 
 **Issues & Risks**:
 
-- **[Severity: High]** The regulations file at `Docs/FWC26_regulations_EN.txt` is **empty (0 bytes)**. The agent gracefully handles this by returning confidence 0.1 and a polite "cannot access" message, but it's non-functional until the file is populated.
+- **[Severity: High — FIXED]** The regulations file at `Docs/FWC26_regulations_EN.txt` now contains regulation text. The agent is functional with confidence 0.80. ✅
 - **[Severity: Med]** The entire regulations text is loaded into the system prompt for every query. This means every rules query sends ~32K tokens of context, even for simple questions like "How many substitutions are allowed?" A RAG approach with chunked retrieval would be more cost-efficient.
 - **[Severity: Low]** No keyword-based pre-filter. A query about "awards" still sends all 52 articles to the LLM.
 
@@ -522,10 +528,10 @@ compose_reply()            → result_composer_agent.compose()
 
 | # | Question | Can Answer? | Accuracy | Which Agent | Notes |
 |---|----------|------------|----------|-------------|-------|
-| 1 | "What matches are going to happen today?" | ⚠️ Partial | Medium | BQ via `mart_match_upcoming` | Only works if ETL has ingested today's fixtures. `match_facts_agent` could do live API fallback but isn't routable. |
-| 2 | "Where is the stadium?" | ⚠️ Partial | Medium | BQ via `dim_venue` | Venue exists in catalog but join path from match → venue isn't direct in marts. |
-| 3 | "How is the weather?" | ⚠️ Partial | Low-Medium | BQ (no weather) / match_facts (has weather) | Weather only works if `match_facts_agent` is routed (it isn't). Even then, OpenWeatherMap is behind `ENABLE_WEATHER=false` by default. |
-| 4 | "Who is the referee?" | ⚠️ Partial | Low | BQ via `fact_fixture` (source) | Referee in source table, not catalog marts. Agent might not find it. |
+| 1 | "What matches are going to happen today?" | ⚠️ Partial | Medium | BQ via `mart_match_upcoming` or match_facts via API | Only works if ETL has ingested today's fixtures. `match_facts_agent` can now do live API fallback. |
+| 2 | "Where is the stadium?" | ✅ Yes | High | match_facts (venue from API) or BQ via `dim_venue` | Now routable via match_facts_agent. |
+| 3 | "How is the weather?" | ✅ Yes | Medium-High | match_facts (OpenWeatherMap) | Now routable. Weather only if `ENABLE_WEATHER=true`. |
+| 4 | "Who is the referee?" | ✅ Yes | Medium | match_facts via API-Football | Now routable via match_facts_agent. |
 | 5 | "What's Team A's current form?" | ✅ Yes | High | BQ via `mart_team_form` | This is the best-supported query type. |
 | 6 | "What's the lineup?" | ❌ No | — | — | No `fact_lineup` or structured lineup data exists. |
 | 7 | "Who is the player with the most goals in last 10 games?" | ❌ No | — | — | No `dim_player`, no `fact_player_match_stat`. |
@@ -547,9 +553,9 @@ compose_reply()            → result_composer_agent.compose()
 | "What's the latest news about Portugal?" | news_agent | Medium |
 | "What's the social sentiment about Morocco?" | sentiment_agent | Low (API restrictions) |
 | "Predict Portugal vs Morocco" | prediction_agent | Medium (heuristic) |
-| "How many substitutions are allowed in World Cup 2026?" | rules_agent | ⚠️ File empty — non-functional |
-| "What happens if a player gets a red card?" | rules_agent | ⚠️ File empty — non-functional |
-| "What is the World Cup 2026 competition format?" | rules_agent | ⚠️ File empty — non-functional |
+| "How many substitutions are allowed in World Cup 2026?" | rules_agent | ✅ High (regulations loaded) |
+| "What happens if a player gets a red card?" | rules_agent | ✅ High (regulations loaded) |
+| "What is the World Cup 2026 competition format?" | rules_agent | ✅ High (regulations loaded) |
 
 ---
 
@@ -597,8 +603,8 @@ Below is the prioritized list of improvements to take this app from its current 
 
 | # | Improvement | Effort | Impact | Description |
 |---|------------|--------|--------|-------------|
-| **P1.1** | Add `match_facts` to planner agents list | 5 min | 🔴 Critical | Unblocks all match-specific queries. One-line change in `planner_agent.py:AVAILABLE_AGENTS`. The orchestrator already has `_run_match_facts` wired. |
-| **P1.2** | Populate `Docs/FWC26_regulations_EN.txt` | 30 min | 🔴 Critical | The rules agent is fully implemented but the regulations file is empty (0 bytes). Download/extract the official FIFA PDF text to make rules queries work. |
+| **P1.1** | ~~Add `match_facts` to planner agents list~~ ✅ DONE | 5 min | 🔴 Critical | `match_facts` now in `planner_agent.py:AVAILABLE_AGENTS`, `orchestrator.py:_INTENTS` and `_AGENTS`, and `runners` dict. Fully routable. |
+| **P1.2** | ~~Populate `Docs/FWC26_regulations_EN.txt`~~ ✅ DONE | 30 min | 🔴 Critical | Regulations file now contains full FIFA World Cup 26™ text. Rules agent returns confidence 0.80. |
 | **P1.3** | Create `dim_player` + `fact_player_match_stat` | 3 days | 🔴 Critical | The single biggest gap. Without player data, 40% of target questions are impossible. Model: one row per (match, player, team) with goals, assists, shots, passes, xG, minutes_played. |
 | **P1.4** | Create `fact_lineup` | 1 day | 🔴 Critical | Structured starting XI per match. Table: (match_id, team_id, player_id, position, is_starter, jersey_number). |
 | **P1.5** | Create `mart_player_form` | 1 day | 🟡 High | Rolling player performance over last 5 games. Aggregates `fact_player_match_stat`. Enables "player to watch" queries. |
@@ -644,17 +650,15 @@ Below is the prioritized list of improvements to take this app from its current 
 
 ## 8. Progress Scorecard
 
-### Current Score: **47/100**
+### Current Score: **57/100** ⬆️ (+10 since last analysis — P1.1 and P1.2 completed)
 
-The foundation is solid — the orchestrator, BQ agent, catalog system, guardrails, and workflow logger are well-designed. The new rules agent and planner improvements have raised the baseline. But the app can only answer ~35% of the target questions today. The biggest remaining gaps are: empty regulations file, missing player data, missing match_facts routing, and no live data freshness.
+The foundation is solid — the orchestrator, BQ agent, catalog system, guardrails, and workflow logger are well-designed. **Two critical risks resolved**: `match_facts_agent` is now fully routable, and the regulations file is populated. The app can now answer ~50% of the target questions (up from ~35%). The biggest remaining gaps are: missing player data, no live data freshness pipeline, and no real ML prediction model.
 
 ### Improvement Contribution to 100%
 
 | # | Improvement | Current Score | Score After | Delta |
 |---|------------|--------------|-------------|-------|
-| — | **CURRENT** (June 7, 2026) | **47** | — | — |
-| P1.1 | Fix match_facts routing | 47 | **53** | +6 |
-| P1.2 | Populate regulations file | 53 | **57** | +4 |
+| — | **CURRENT** (June 7, 2026) | **57** | — | — |
 | P1.3 | dim_player + fact_player_match_stat | 57 | **69** | +12 |
 | P1.4 | fact_lineup | 69 | **75** | +6 |
 | P1.5 | mart_player_form | 75 | **79** | +4 |
@@ -680,13 +684,13 @@ Team Form / Stats                      ✅ 90%     100%
 Standings                              ✅ 85%     100%
 Head-to-Head Records                   ✅ 80%     100%
 Match Events (goals, cards)            ⚠️ 60%      95%
-Venue / Stadium Info                   ⚠️ 50%      95%
-Weather at Venue                       ⚠️ 30%      90%
-Referee Info                           ⚠️ 35%      90%
+Venue / Stadium Info                   ✅ 75%      95%   (* match_facts routable)
+Weather at Venue                       ✅ 65%      90%   (* match_facts routable)
+Referee Info                           ✅ 70%      90%   (* match_facts routable)
+Rules / Regulations                    ✅ 80%      95%   (* file populated)
 Predictions (model)                    ⚠️ 40%      90%
 News                                   ⚠️ 55%      80%
 Sentiment                              ⚠️ 20%      60%
-Rules / Regulations                    ❌  5%*     95%   (* empty file)
 Lineups                                ❌  0%      95%
 Player Stats (per game)                ❌  0%      95%
 Player Form (last N games)             ❌  0%      95%
@@ -696,7 +700,7 @@ Pre-Match Summary                      ❌  5%      95%
 Odds                                   ❌  0%      85%
 Coach / Tactical                       ❌  0%      90%
 ─────────────────────────────────────────────────────────
-OVERALL                                42%       100%
+OVERALL                                50%       100%
 ```
 
 ---
@@ -705,17 +709,22 @@ OVERALL                                42%       100%
 
 The architecture is **well-designed at its core** — the catalog-driven BQ agent, the read-only guardrails, the planner+orchestrator pattern, and the cache-first API strategy are all solid decisions. The problem is **what's missing**, not what's broken.
 
-**Current score: 47/100** — the app answers ~35% of target questions today.
+**Current score: 57/100** ⬆️ (+10) — the app answers ~50% of target questions today (up from ~35%).
 
-The single biggest unlock is **player-level data** (`dim_player`, `fact_player_match_stat`, `fact_lineup`, `mart_player_form`). Adding these four tables would raise the score from 47 to 79. The next biggest unlock is **live data freshness** (5-min polling cron + match_facts routing fix), taking it to 88. A pre-match summary agent (+ streaming) takes it to 93+. At that point, the app genuinely serves the "fan watching a game" use case.
+**Two critical risks resolved** since last analysis:
+- P1.1 ✅: `match_facts_agent` now fully routable — match-specific queries reach API-Football live data
+- P1.2 ✅: Regulations file populated — rules agent now functional
+
+The single biggest unlock remaining is **player-level data** (`dim_player`, `fact_player_match_stat`, `fact_lineup`, `mart_player_form`). Adding these four tables would raise the score from 57 to 79. The next biggest unlock is **live data freshness** (5-min polling cron), taking it to 87. A pre-match summary agent (+ streaming) takes it to 93+. At that point, the app genuinely serves the "fan watching a game" use case.
 
 ### Quickest Wins (do today)
 
-1. **P1.1** — Add `"match_facts"` to `planner_agent.py:AVAILABLE_AGENTS`. One line. Unlocks live fixture fallback, weather, and web-enhanced match answers immediately. (+6 points)
-2. **P1.2** — Populate `Docs/FWC26_regulations_EN.txt` with actual FIFA regulations text. The rules agent is fully implemented and waiting. (+4 points)
+1. **P1.3** — Build `dim_player` + `fact_player_match_stat`. The single biggest unlock. (+12 points)
+2. **P1.4** — Build `fact_lineup` for structured starting XI. (+6 points)
+3. **P1.8** — Wire match_facts for live API fallback when BQ cache misses. (+2 points)
 
-### Top 3 Risks to Monitor
+### Top 3 Remaining Risks
 
-1. **R1**: `match_facts_agent` unreachable — all match queries silently fall to BQ
-2. **R2**: Rules agent non-functional (empty regulations file)
-3. **R3**: No player data model — 40% of target questions impossible
+1. **R3**: No player data model — 40% of target questions still impossible
+2. **R4**: No live data freshness — users get stale data during matches
+3. **R6**: Prediction model is heuristic-only — uniform 33/33/33 fallback, no real ML
