@@ -11,7 +11,6 @@ from pathlib import Path
 
 import joblib
 
-from src.tools.api_football import get_fixtures_cache_first
 from src.tools.bigquery_tools import run_query
 
 _MODEL_PATH = Path(__file__).resolve().parents[2] / "bin" / "models_deployed" / "wc2026_predictor.pkl"
@@ -33,7 +32,7 @@ def _safe(text: str) -> str:
 def _table_ref() -> str:
     project = os.environ["BIGQUERY_PROJECT_ID"]
     dataset = os.environ["BIGQUERY_DATASET_ID"]
-    return f"`{project}.{dataset}.fact_fixture`"
+    return f"`{project}.{dataset}.fact_match`"
 
 
 def _parse_matchup(query: str) -> tuple[str, str] | None:
@@ -56,7 +55,7 @@ def _parse_matchup(query: str) -> tuple[str, str] | None:
 def _fetch_team_history(team: str, limit: int = 10) -> list[dict]:
     team_safe = _safe(team.lower())
     sql = f"""
-        SELECT CAST(fixture_datetime AS STRING) AS date,
+        SELECT CAST(kickoff_at AS STRING) AS date,
                      home_team_name AS home_team,
                      away_team_name AS away_team,
                      home_goals,
@@ -65,7 +64,7 @@ def _fetch_team_history(team: str, limit: int = 10) -> list[dict]:
         WHERE (LOWER(home_team_name) LIKE '%{team_safe}%' OR LOWER(away_team_name) LIKE '%{team_safe}%')
       AND home_goals IS NOT NULL
       AND away_goals IS NOT NULL
-        ORDER BY fixture_datetime DESC
+        ORDER BY kickoff_at DESC
     LIMIT {int(limit)}
     """
     df = run_query(sql)
@@ -78,7 +77,7 @@ def _fetch_h2h(home_team: str, away_team: str, limit: int = 10) -> list[dict]:
     home_safe = _safe(home_team.lower())
     away_safe = _safe(away_team.lower())
     sql = f"""
-        SELECT CAST(fixture_datetime AS STRING) AS date,
+        SELECT CAST(kickoff_at AS STRING) AS date,
                      home_team_name AS home_team,
                      away_team_name AS away_team,
                      home_goals,
@@ -91,7 +90,7 @@ def _fetch_h2h(home_team: str, away_team: str, limit: int = 10) -> list[dict]:
     )
       AND home_goals IS NOT NULL
       AND away_goals IS NOT NULL
-        ORDER BY fixture_datetime DESC
+        ORDER BY kickoff_at DESC
     LIMIT {int(limit)}
     """
     df = run_query(sql)
@@ -149,9 +148,9 @@ def _h2h_home_edge(home_team: str, away_team: str, rows: list[dict]) -> float:
 
 
 def _warm_cache_from_api(home_team: str, away_team: str) -> None:
-    # Keep API calls minimal: only two seasons, one call each, and only on BQ miss.
-    for season in (2022, 2018):
-        get_fixtures_cache_first(f"{home_team} {away_team} {season}", limit=5)
+    # No-op: live API ingestion is owned by the ETL scheduler, not the chat path.
+    # Runtime prediction relies on BigQuery-only data.
+    _ = (home_team, away_team)
 
 
 def _heuristic_probs(home_team: str, away_team: str, source: str) -> dict | None:
@@ -214,16 +213,7 @@ def predict_match(query: str) -> dict | None:
     if probs:
         return probs
 
-    # 2) Cache miss: fetch historical seasons from API and persist to BQ.
-    try:
-        _warm_cache_from_api(home_team, away_team)
-        probs = _heuristic_probs(home_team, away_team, source="api_then_bigquery")
-    except Exception:
-        probs = None
-    if probs:
-        return probs
-
-    # 3) Legacy model path (if deployed and feature builder exists).
+    # 2) Legacy model path (if deployed and feature builder exists).
     model = _load_model()
     if model is not None:
         # Feature builder not implemented yet; keep fallback path explicit.
