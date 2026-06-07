@@ -13,7 +13,7 @@ from langchain_openai import ChatOpenAI
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]
+AVAILABLE_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]
 
 _PLANNER_PROMPT = """\
 You are a planning agent for a football assistant.
@@ -30,9 +30,11 @@ Available agents:
 - bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
 - chat: generic conversation only.
 - rules: official FIFA World Cup 2026 rules, regulations, competition format, disciplinary matters, yellow/red cards, protests, eligibility, kit rules, medical/doping, awards, financial provisions. Use this for ANY question about tournament rules, regulations, or procedures.
+- match_facts: live/structured match details — lineups, venue, referee, weather, match events, player stats, head-to-head from the API-Football external API. Use this for ANY query about specific match details, lineups, referees, venues, or weather for a particular match.
 
 Rules:
 - bigquery is the single source of truth for all structured football data. Always include it for any data question.
+- match_facts is the source for LIVE match-specific data (lineups, venue, referee, weather, match events). Use it for queries about a specific match's details.
 - If the user asks for predictions, include prediction and bigquery.
 - If the user asks for news or sentiment, include the corresponding specialist.
 - If the user asks about rules, regulations, competition format, disciplinary rules, protests, cards, eligibility, or any FIFA procedure, use the rules agent.
@@ -79,7 +81,9 @@ def _fallback_plan(query: str) -> dict[str, Any]:
         agents = ["news"]
     elif any(term in q for term in ("sentiment", "social", "fan reaction")):
         agents = ["sentiment"]
-    elif any(term in q for term in ("fixture", "match", "result", "standings", "venue", "referee", "lineup")):
+    elif any(term in q for term in ("lineup", "referee", "venue", "weather", "match events", "player stats", "head-to-head", "h2h")):
+        agents = ["match_facts"]
+    elif any(term in q for term in ("fixture", "match", "result", "standings")):
         agents = ["bigquery"]
     elif any(term in q for term in ("rule", "regulation", "format", "yellow card", "red card", "penalty", "extra time", "protest", "disciplinary", "eligibility", "squad", "kit", "doping", "award", "trophy", "substitute", "var", "offsides", "handball")):
         agents = ["rules"]

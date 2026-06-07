@@ -36,8 +36,8 @@ class OrchestratorState(TypedDict):
 
 _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-_INTENTS = ["news", "sentiment", "data", "prediction", "chat", "rules"]
-_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules"]
+_INTENTS = ["news", "sentiment", "data", "prediction", "chat", "rules", "match_facts"]
+_AGENTS = ["news", "sentiment", "prediction", "bigquery", "chat", "rules", "match_facts"]
 
 _INTENT_PROMPT = """\
 You are a routing manager for a football assistant.
@@ -46,7 +46,8 @@ Task:
 - Classify the user message into exactly one of: {intents}
 
 Routing policy:
-- `data`: schedules, fixtures, results, standings, historical matches, lineups, venues, referees, any structured factual query about matches or teams.
+- `data`: schedules, fixtures, results, standings, historical matches, any structured factual query about matches or teams.
+- `match_facts`: lineups, venue, referee, weather, match events, player stats, head-to-head for a specific match. Live API data.
 - `prediction`: user asks for forecast, probability, odds, who will win.
 - `sentiment`: user asks fan sentiment, public opinion, social reaction.
 - `news`: user asks for latest updates, headlines, rumours, transfers, injuries from media/web.
@@ -84,11 +85,13 @@ Available agents:
 - news: latest media news, headlines, rumours, transfers, injuries.
 - sentiment: fan/social sentiment and public opinion.
 - prediction: win/draw/loss probabilities and match forecasts.
-- bigquery: ALL structured data — fixtures, results, standings, venues, referees, lineups, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
+- bigquery: ALL structured data — fixtures, results, standings, historical facts, counts, comparisons, analytics, head-to-head, form, upcoming schedule. Use this for any factual data question.
+- match_facts: live/structured match-specific details — lineups, venue, referee, weather, match events, player stats, head-to-head from the API-Football external API. Use this for queries about a specific match's lineups, venue, referee, or weather.
 - chat: generic conversation only.
 
 Selection rules:
 - bigquery is the single source of truth for all structured football data. Always include it for any data question.
+- match_facts is the source for LIVE match-specific data (lineups, venue, referee, weather, match events). Use it when the query asks about specific match details.
 - If the user asks for prediction/forecast, include both prediction and bigquery.
 - If the user asks for news or sentiment, include the corresponding specialist.
 - Never select more than 2 agents unless there is a clear need for a third.
@@ -251,6 +254,7 @@ def execute_agents_node(state: OrchestratorState) -> OrchestratorState:
         "bigquery": _run_bigquery,
         "chat": _run_chat,
         "rules": _run_rules,
+        "match_facts": _run_match_facts,
     }
 
     outputs: dict[str, dict[str, Any]] = {}
