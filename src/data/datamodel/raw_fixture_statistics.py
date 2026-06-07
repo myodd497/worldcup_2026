@@ -215,6 +215,7 @@ def _matches_missing_stats(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> list[tuple[int, datetime | None]]:
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
 
@@ -225,6 +226,11 @@ def _matches_missing_stats(
     if since_date:
         scope_clauses.append(f"match_date >= DATE('{since_date}')")
     scope_sql = " OR ".join(scope_clauses) if scope_clauses else "TRUE"
+
+    age_sql = (
+        f"match_date >= DATE_SUB(CURRENT_DATE('UTC'), INTERVAL {int(max_age_days)} DAY)"
+        if max_age_days is not None else "TRUE"
+    )
 
     sql = f"""
     WITH completed AS (
@@ -237,7 +243,7 @@ def _matches_missing_stats(
       GROUP BY match_id
     ),
     scoped AS (
-      SELECT * FROM completed WHERE {scope_sql}
+      SELECT * FROM completed WHERE ({scope_sql}) AND ({age_sql})
     ),
     have AS (
       SELECT DISTINCT match_id FROM {_ref()}
@@ -299,14 +305,16 @@ def ingest_missing(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict[str, int]:
     ensure_table()
     targets = _matches_missing_stats(
-        limit=limit, competition_ids=competition_ids, since_date=since_date,
+        limit=limit, competition_ids=competition_ids,
+        since_date=since_date, max_age_days=max_age_days,
     )
     logger.info(
-        "ingest_missing: %d match(es) need stats (competition_ids=%s since_date=%s)",
-        len(targets), competition_ids, since_date,
+        "ingest_missing: %d match(es) need stats (competition_ids=%s since_date=%s max_age_days=%s)",
+        len(targets), competition_ids, since_date, max_age_days,
     )
 
     api_calls = 0
@@ -364,11 +372,13 @@ def run(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
+    max_age_days: int | None = 7,
 ) -> dict[str, object]:
     ensure_table()
     backfilled = backfill_from_legacy()
     ingest_stats = ingest_missing(
-        limit=limit, competition_ids=competition_ids, since_date=since_date,
+        limit=limit, competition_ids=competition_ids,
+        since_date=since_date, max_age_days=max_age_days,
     )
     return {
         "backfilled_rows": backfilled,
