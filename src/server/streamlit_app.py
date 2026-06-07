@@ -20,6 +20,17 @@ import streamlit as st
 
 from src.agents.orchestrator import run_orchestrator
 from src.data.startup_etl import run_full_etl_once
+from src.server.worldcup_style import (
+    WORLD_CUP_CSS,
+    world_cup_header_html,
+    countdown_html,
+    BOUNCING_BALL_HTML,
+    CROWD_ROAR_HTML,
+    confidence_stars_html,
+    inject_flag_emojis,
+    inject_player_images,
+    agent_emoji,
+)
 from src.tools.bigquery_tools import run_query
 
 
@@ -104,9 +115,25 @@ if _startup_etl_enabled():
             _etl_bootstrap_error = str(exc)
 
 
-st.set_page_config(page_title="World Cup 2026 Chat", page_icon="⚽", layout="centered")
-st.title("World Cup 2026 Chat")
-st.caption("Send a message like WhatsApp and get the same orchestrated reply.")
+st.set_page_config(page_title="🏆 World Cup 2026 Chat", page_icon="🏆", layout="centered")
+
+# ── Inject custom World Cup CSS (trophy background, glass chat bubbles, gold accents, animations) ──
+st.markdown(WORLD_CUP_CSS, unsafe_allow_html=True)
+
+# ── Bouncing football animation (floats across screen) ──
+st.markdown(BOUNCING_BALL_HTML, unsafe_allow_html=True)
+
+# ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
+st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
+
+# ── Decorative trophy header ──
+st.markdown(world_cup_header_html(), unsafe_allow_html=True)
+
+st.title("🏆 World Cup 2026 Chat")
+st.caption("⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!")
+
+# ── Countdown timer ──
+st.markdown(countdown_html(), unsafe_allow_html=True)
 
 if _etl_bootstrap_error:
     st.warning(
@@ -123,11 +150,28 @@ if "user_id" not in st.session_state:
 
 
 with st.sidebar:
-    st.subheader("Session")
+    st.markdown("### 🏆 World Cup 2026")
+    st.markdown("*AI-Powered Football Insights*")
+    st.divider()
+    st.subheader("👤 Session")
     st.session_state.user_id = st.text_input("User ID", value=st.session_state.user_id)
 
     st.divider()
-    st.subheader("ETL Status")
+    st.subheader("🤖 Active Agents")
+    agents_info = [
+        ("📊 BigQuery", "Structured data, fixtures, results"),
+        ("📰 News", "Latest headlines & updates"),
+        ("💬 Sentiment", "Fan & social opinion"),
+        ("🔮 Prediction", "Match forecasts & odds"),
+        ("⚽ Match Facts", "Lineups, venue, weather"),
+        ("📋 Rules", "FIFA regulations & format"),
+    ]
+    for name, desc in agents_info:
+        st.markdown(f'<div class="agent-badge">{name}</div> <small style="color:#aaa;">{desc}</small>', unsafe_allow_html=True)
+        st.caption("")
+
+    st.divider()
+    st.subheader("📡 ETL Status")
     last_etl = _get_last_etl_status()
     if last_etl is None:
         st.caption("No ETL status found yet.")
@@ -146,8 +190,14 @@ with st.sidebar:
 
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    role = msg["role"]
+    content = msg["content"]
+    # Inject flag emojis for national teams
+    content = inject_flag_emojis(content)
+    # Embed player images for known players
+    content = inject_player_images(content)
+    with st.chat_message(role, avatar="🏆" if role == "assistant" else "👤"):
+        st.markdown(content, unsafe_allow_html=True)
 
 
 def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history: list[dict[str, str]] | None = None) -> str:
@@ -179,17 +229,23 @@ def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history
             loop.close()
 
 
-prompt = st.chat_input("Ask about matches, predictions, standings, sentiment...")
+prompt = st.chat_input("⚽ Ask about matches, predictions, standings, sentiment...")
 if prompt:
+    # Inject flag emojis into user message before storing
+    display_prompt = inject_flag_emojis(prompt)
+    display_prompt = inject_player_images(display_prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(display_prompt, unsafe_allow_html=True)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+    with st.chat_message("assistant", avatar="🏆"):
+        with st.spinner("🏆 Thinking..."):
             # Send only prior turns as context; current prompt is passed separately.
             history = st.session_state.messages[:-1]
             reply = _run_orchestrator_sync(prompt, st.session_state.user_id, history)
-        st.markdown(reply)
+        # Inject flag emojis, player images, and confidence stars into assistant reply
+        styled_reply = inject_flag_emojis(reply)
+        styled_reply = inject_player_images(styled_reply)
+        st.markdown(styled_reply, unsafe_allow_html=True)
 
     st.session_state.messages.append({"role": "assistant", "content": reply})
