@@ -90,7 +90,7 @@ def build() -> dict[str, object]:
       event_type,
       event_detail,
       event_comments,
-      (event_type = 'Goal')                        AS is_goal,
+      (event_type = 'Goal' AND event_detail != 'Missed Penalty') AS is_goal,
       (event_detail = 'Own Goal')                  AS is_own_goal,
       (event_detail = 'Penalty' AND event_type = 'Goal') AS is_penalty_goal,
       (event_detail = 'Yellow Card')               AS is_yellow_card,
