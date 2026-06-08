@@ -2,8 +2,11 @@
 
 Replaces dumping the entire catalog into every system prompt.
 
-Strategy: lightweight keyword + column-name overlap scoring with hand-curated
-topic boosts. No embeddings dependency; deterministic and fast.
+Strategy:
+  1. Embedding-based semantic match (text-embedding-3-small) over a rich
+     per-table document (description + usage_hint + example questions + column names).
+  2. Keyword + topic-boost score as a tiebreaker and as a full fallback when
+     embeddings are unavailable (no network / no API key).
 
 Public API:
   - search_schema(question, top_k=5) → list[TableSpec]
@@ -14,6 +17,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from src.agents.embeddings import cosine, embed, embed_one
 from src.data.datamodel.catalog import (
     TableSpec,
     format_table_detail_for_llm,
@@ -161,23 +165,58 @@ def _score_table(spec: TableSpec, q_tokens: list[str], q_text: str) -> float:
 
 
 def search_schema(question: str, top_k: int = 5) -> list[TableSpec]:
-    """Return the top-k tables most relevant to the question."""
+    """Return the top-k tables most relevant to the question.
+
+    Hybrid scorer: semantic (embeddings) + keyword/topic boosts. Keyword score
+    serves as both the tiebreaker and the full fallback when embeddings are
+    unavailable.
+    """
     q_tokens = _tokens(question)
     q_text = (question or "").lower()
     tables = list_tables(agent_visible=True)
-    scored = sorted(
-        ((spec, _score_table(spec, q_tokens, q_text)) for spec in tables),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )
-    # Always include dim_team if user mentions a country name (cheap heuristic).
+
+    # Keyword-only scores.
+    kw_scores = {spec.name: _score_table(spec, q_tokens, q_text) for spec in tables}
+
+    # Semantic scores (no-op if embeddings unavailable).
+    q_vec = embed_one((question or "").strip())
+    semantic: dict[str, float] = {}
+    if q_vec is not None:
+        table_docs = [_table_doc(t) for t in tables]
+        table_vecs = embed(table_docs)
+        for spec, vec in zip(tables, table_vecs):
+            semantic[spec.name] = cosine(q_vec, vec) if vec is not None else 0.0
+
+    def _final(spec: TableSpec) -> float:
+        # Semantic dominates when available; keyword is the tiebreaker.
+        s = semantic.get(spec.name, 0.0)
+        k = kw_scores.get(spec.name, 0.0)
+        # Normalise keyword score to roughly [0,1] then blend.
+        k_norm = min(1.0, k / 10.0)
+        if semantic:
+            return 0.75 * s + 0.25 * k_norm
+        return k_norm
+
+    scored = sorted(((spec, _final(spec)) for spec in tables), key=lambda kv: kv[1], reverse=True)
     selected = [s for s, sc in scored if sc > 0][:top_k]
+    # Always include dim_team if the user likely names a country.
     if not any(s.name == "dim_team" for s in selected):
         for spec in tables:
             if spec.name == "dim_team":
                 selected.append(spec)
                 break
     return selected[:top_k + 1]
+
+
+def _table_doc(spec: TableSpec) -> str:
+    """Rich per-table document used for semantic matching."""
+    cols = ", ".join(c.name for c in spec.schema)
+    examples = " | ".join(spec.example_questions) if spec.example_questions else ""
+    return (
+        f"Table {spec.name} ({spec.layer}). Grain: {spec.grain}. "
+        f"{spec.description} {spec.usage_hint} "
+        f"Columns: {cols}. Example questions: {examples}"
+    )
 
 
 def search_schema_tool(question: str, top_k: int = 5) -> str:
