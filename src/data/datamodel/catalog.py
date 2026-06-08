@@ -56,7 +56,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(dim_team.DIM_TEAM_SCHEMA),
         primary_keys=("team_id",),
         agent_visible=True,
-        usage_hint="Always use this for team-name → team_id lookups. Prefer is_wc2026_participant filter for WC questions.",
+        usage_hint=(
+            "Always use this for team-name → team_id lookups (NEVER `LOWER(team_name) LIKE '%...%'` — use the entity resolver)."
+            " `is_wc2026_participant = TRUE` is the canonical filter for 'WC 2026 teams'."
+        ),
         example_questions=("Is Morocco a WC 2026 participant?", "Find the team_id for Argentina."),
     ),
     TableSpec(
@@ -66,7 +69,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(dim_competition.DIM_COMPETITION_SCHEMA),
         primary_keys=("competition_id",),
         agent_visible=True,
-        usage_hint="World Cup competition_id = 1. Use is_world_cup or competition_id=1 to filter.",
+        usage_hint=(
+            "World Cup 2026 is `competition_id = 1` AND `season_year = 2026`. Use `is_world_cup`"
+            " or `competition_id = 1` to filter for any World Cup edition."
+        ),
     ),
     TableSpec(
         name="dim_venue", layer="dim",
@@ -104,8 +110,8 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         primary_keys=("match_id",),
         agent_visible=True,
         usage_hint=(
-            "match_status is normalized to: SCHEDULED, LIVE, FINISHED, POSTPONED, CANCELLED, ABANDONED. "
-            "Use is_completed for played-match filters. winner_team_id is NULL on draw or not-completed. "
+            "`match_status` ∈ {SCHEDULED, LIVE, FINISHED, POSTPONED, CANCELLED, ABANDONED}. "
+            "Use `is_completed` for played-match filters. `winner_team_id` is NULL on draw or not-completed. "
             "Prefer marts (mart_match_history / mart_match_upcoming) when they cover the question."
         ),
     ),
@@ -118,8 +124,11 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         agent_visible=True,
         usage_hint=(
             "Use when you need per-team stats or W/D/L from a team's perspective. "
-            "result is one of 'W','D','L' (NULL if not completed). "
-            "Stats are NULL for international matches (API-Football limitation)."
+            "`result` ∈ {'W','D','L'} (NULL if not completed). `team_id` lives directly on the row — "
+            "filter by it; only JOIN dim_team for the human-readable name. "
+            "For 'last N matches per team' use ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY match_date DESC) then WHERE rn <= N. "
+            "Stat columns (possession_pct, shots_*, xg) are NULL for many international matches (API-Football limitation) — "
+            "filter `IS NOT NULL` and require a min sample size for averages."
         ),
     ),
     TableSpec(
@@ -129,7 +138,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(fact_match_event.FACT_MATCH_EVENT_SCHEMA),
         primary_keys=("match_id", "event_seq"),
         agent_visible=True,
-        usage_hint="Filter is_goal/is_yellow_card/is_red_card/is_substitution for typed event queries.",
+        usage_hint=(
+            "Filter `is_goal` / `is_yellow_card` / `is_red_card` / `is_substitution` for typed event queries. "
+            "`is_goal` already excludes missed penalties — use it for 'goals scored' counts."
+        ),
     ),
     TableSpec(
         name="fact_standings_snapshot", layer="fact",
@@ -197,9 +209,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         primary_keys=("team_lo_id", "team_hi_id"),
         agent_visible=True, preferred=True,
         usage_hint=(
-            "IMPORTANT: pair key is sorted. To query the pair (A, B) use "
-            "team_lo_id = LEAST(A_id, B_id) AND team_hi_id = GREATEST(A_id, B_id). "
-            "team_lo_wins is wins by the team with the lower id, NOT by the home team."
+            "IMPORTANT: pair key is sorted by id. To query the pair (A, B) use "
+            "`team_lo_id = LEAST(A_id, B_id) AND team_hi_id = GREATEST(A_id, B_id)`. "
+            "`team_lo_wins` is wins by the team with the LOWER id (NOT by the home team). "
+            "Resolve both team names → team_id via the entity resolver FIRST."
         ),
         example_questions=(
             "How many times have Argentina and Brazil played?",
@@ -230,7 +243,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(mart_match_upcoming.SCHEMA),
         primary_keys=("match_id",),
         agent_visible=True, preferred=True,
-        usage_hint="Use for 'next match', 'upcoming fixtures', 'preview <A> vs <B>'. days_until_kickoff is signed (positive = future).",
+        usage_hint=(
+            "Use for 'next match', 'upcoming fixtures', 'preview <A> vs <B>'. "
+            "`days_until_kickoff` is signed (positive = future). Already enriched with last-5 form + H2H."
+        ),
         example_questions=(
             "What is Portugal's next match?",
             "List the next 5 World Cup matches.",
@@ -243,7 +259,10 @@ _CATALOG_DEFS: tuple[TableSpec, ...] = (
         schema=tuple(mart_tournament_state.SCHEMA),
         primary_keys=("competition_id", "season_year", "team_id"),
         agent_visible=True, preferred=True,
-        usage_hint="Use for 'standings', 'group stage', 'where does X stand'. For WC2026 filter competition_id=1 AND season_year=2026.",
+        usage_hint=(
+            "Use for 'standings', 'group stage', 'where does X stand'. "
+            "WC 2026 filter: `competition_id = 1 AND season_year = 2026`."
+        ),
         example_questions=(
             "What are the current WC2026 group standings?",
             "Show Group A of the 2026 World Cup.",
