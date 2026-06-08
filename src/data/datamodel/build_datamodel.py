@@ -22,12 +22,12 @@ Runs in strict dependency order:
       mart_match_history, mart_match_upcoming, mart_tournament_state
 
 Since-date scoping:
-  Raw steps for events/stats/standings are scoped to a sliding window that
-  starts from the day after the last successful RAW layer completion (read
-  from the etl_run_status metadata table).  If no prior success is on record,
-  the window defaults to 14 days.  This guarantees that a single daily
-  failure is automatically recovered the next day without burning API quota
-  on unlimited historical backfill.
+    Raw steps for events/stats/standings are scoped to a sliding window derived
+    from the last successful ETL `finished_at` timestamp (read from
+    `etl_run_status`). We apply a small overlap (default 6h) and then truncate
+    to date, so intra-day schedules (hourly / every 10 minutes) do not skip the
+    current day after an early successful run. If no prior success is on record,
+    the window defaults to 14 days.
 
 Error resilience:
   Every per-step call is wrapped in try/except so one misbehaving module
@@ -86,6 +86,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SINCE_FALLBACK_DAYS = 14  # generous default when no prior success is recorded
+_SINCE_OVERLAP_HOURS = int(os.getenv("ETL_SINCE_OVERLAP_HOURS", "6"))
 
 
 def _etl_status_fqn() -> str:
@@ -95,33 +96,39 @@ def _etl_status_fqn() -> str:
 
 
 def _compute_since_date() -> str:
-    """Return a 'YYYY-MM-DD' ISO date that covers the gap since the last
-    successful RAW-layer completion recorded in etl_run_status.
+    """Return a 'YYYY-MM-DD' ISO date for RAW-layer scoping.
 
-    If no prior success row exists, falls back to _SINCE_FALLBACK_DAYS ago
-    so the first run backfills a reasonable window without hitting the full
-    historical dataset.
+    Uses the latest successful ETL `finished_at` minus a small overlap window,
+    then truncates to date. This avoids gaps for frequent schedules while
+    keeping API cost bounded.
+
+    If no prior success row exists, falls back to _SINCE_FALLBACK_DAYS ago.
     """
     try:
         sql = f"""
-        SELECT MAX(DATE(finished_at)) AS last_success_date
+        SELECT MAX(finished_at) AS last_success_ts
         FROM {_etl_status_fqn()}
         WHERE status = 'SUCCESS'
           AND trigger IN ('github_action', 'fastapi_startup')
         """
         df = _bq_tools.run_query(sql)
         if not df.empty:
-            last_dt = df["last_success_date"].iloc[0]
+            last_ts = df["last_success_ts"].iloc[0]
             # Guard against NULL (no rows) which pandas surfaces as NaT/None.
-            if last_dt is not None and not pd.isna(last_dt):
-                # Convert pandas Timestamp → datetime.date if needed.
-                if hasattr(last_dt, "date") and not isinstance(last_dt, date):
-                    last_dt = last_dt.date()
-                # +1 day so we re-process the day after the last success
-                # (covers partial failures in the same day)
-                since = last_dt + timedelta(days=1)
+            if last_ts is not None and not pd.isna(last_ts):
+                # Convert pandas Timestamp -> datetime when needed.
+                if hasattr(last_ts, "to_pydatetime"):
+                    last_ts = last_ts.to_pydatetime()
+
+                overlap_hours = max(0, _SINCE_OVERLAP_HOURS)
+                since = (last_ts - timedelta(hours=overlap_hours)).date()
+                if since > date.today():
+                    since = date.today()
                 logger.info(
-                    "_compute_since_date: last success date=%s → since=%s", last_dt, since
+                    "_compute_since_date: last success ts=%s overlap_h=%s → since=%s",
+                    last_ts,
+                    overlap_hours,
+                    since,
                 )
                 return since.isoformat()
     except Exception as exc:
