@@ -47,6 +47,69 @@ API_BASE = "https://v3.football.api-sports.io"
 WC_LEAGUE_ID = 1
 WC_LEAGUE_SEASONS = [2018, 2022, 2026]
 TEAM_HISTORY_SEASONS = list(range(2020, 2027))   # 2020..2026 inclusive
+WORLD_COMPETITION_COUNTRY = "world"
+
+# Curated list of competitions (API-Football league IDs), intentionally
+# fixed to avoid day-to-day ranking drift.
+#
+# Scope rules:
+# - Exclude second divisions.
+# - Keep selected national first divisions + national cups.
+# - Always keep key international tournaments requested by product.
+CURATED_TOP_COMPETITION_IDS: set[int] = {
+    # FIFA World Cup (also fetched explicitly via WC_LEAGUE_ID below)
+    WC_LEAGUE_ID,
+
+    # International tournaments requested to always keep
+    2,    # UEFA Champions League
+    3,    # UEFA Europa League
+    15,   # FIFA Club World Cup
+    848,  # UEFA Europa Conference League
+    13,   # CONMEBOL Libertadores (Americas Champions League)
+    11,   # CONMEBOL Sudamericana (Americas Europa-equivalent)
+    16,   # CONCACAF Champions League
+    12,   # CAF Champions League
+    20,   # CAF Confederation Cup (Africa Europa-equivalent)
+    17,   # AFC Champions League Elite
+    18,   # AFC Champions League Two (Asia Europa-equivalent)
+
+    # Europe top leagues (10)
+    39,   # Premier League
+    61,   # Ligue 1
+    78,   # Bundesliga
+    88,   # Eredivisie
+    94,   # Primeira Liga
+    135,  # Serie A
+    140,  # La Liga
+    144,  # Jupiler Pro League
+    203,  # Super Lig
+    235,  # Premier Liga (Russia)
+
+    # Americas top leagues (5)
+    71,   # Brasileirao Serie A
+    128,  # Primera Division / Liga Profesional (Argentina)
+    239,  # Primera A (Colombia)
+    253,  # Major League Soccer
+    262,  # Liga MX
+
+    # Africa top leagues (2)
+    233,  # Egyptian Premier League
+    288,  # Premier Soccer League (South Africa)
+
+    # Asia top leagues (2)
+    301,  # UAE Pro League
+    307,  # Saudi Pro League
+
+    # National cups (known/high-priority)
+    45,   # FA Cup
+    48,   # League Cup
+    66,   # Coupe de France
+    81,   # DFB Pokal
+    137,  # Coppa Italia
+    143,  # Copa del Rey
+    507,  # South Africa Cup (Nedbank Cup)
+    560,  # UAE Presidents Cup
+}
 
 # A finished match is immutable; never re-fetch.
 FINAL_STATUSES = {"FT", "AET", "PEN", "AWD", "WO"}
@@ -472,6 +535,47 @@ def _ingest_response(
     return written, skipped_final, skipped_fresh
 
 
+def _pick_allowed_competitions_for_date_scope(
+    fixtures: list[dict],
+) -> tuple[set[int], set[int], int]:
+    """Return (curated_present_ids, world_ids, total_distinct_ids).
+
+    curated_present_ids includes only curated competitions present in the date
+    window payload, while world_ids includes every competition whose
+    league.country is 'World'.
+    """
+    curated_present_ids: set[int] = set()
+    world_ids: set[int] = set()
+    all_ids: set[int] = set()
+
+    for fix in fixtures:
+        league = fix.get("league") or {}
+        league_id = _safe_int(league.get("id"))
+        if league_id is None:
+            continue
+
+        all_ids.add(league_id)
+        country = (league.get("country") or "").strip().casefold()
+        if country == WORLD_COMPETITION_COUNTRY:
+            world_ids.add(league_id)
+        if league_id in CURATED_TOP_COMPETITION_IDS:
+            curated_present_ids.add(league_id)
+
+    return curated_present_ids, world_ids, len(all_ids)
+
+
+def _fixture_is_allowed_for_date_scope(fix: dict, allowed_competition_ids: set[int]) -> bool:
+    league = fix.get("league") or {}
+    league_id = _safe_int(league.get("id"))
+    if league_id is None:
+        return False
+
+    country = (league.get("country") or "").strip().casefold()
+    if country == WORLD_COMPETITION_COUNTRY:
+        return True
+    return league_id in allowed_competition_ids
+
+
 def ingest_by_league(
     league_id: int,
     seasons: Iterable[int],
@@ -573,6 +677,8 @@ def ingest_by_date_range(
     api_calls = 0
     written = skipped_final = skipped_fresh = 0
     day_count = 0
+    day_payloads: list[tuple[str, list[dict]]] = []
+    all_window_fixtures: list[dict] = []
 
     cur = start_dt
     while cur <= end_dt:
@@ -581,16 +687,37 @@ def ingest_by_date_range(
         api_calls += 1
         day_count += 1
         fixtures = data.get("response", []) or []
-        w, sf, sr = _ingest_response(fixtures, snapshots)
+        day_payloads.append((iso, fixtures))
+        all_window_fixtures.extend(fixtures)
+        cur = cur + timedelta(days=1)
+        time.sleep(API_SLEEP_SECONDS)
+
+    curated_ids, world_ids, total_distinct = _pick_allowed_competitions_for_date_scope(
+        all_window_fixtures,
+    )
+    allowed_competition_ids = curated_ids | world_ids
+
+    logger.info(
+        "date-scope competition filter: distinct_total=%d kept_curated=%d kept_world=%d kept_total=%d",
+        total_distinct,
+        len(curated_ids),
+        len(world_ids),
+        len(allowed_competition_ids),
+    )
+
+    for iso, fixtures in day_payloads:
+        filtered = [
+            f for f in fixtures
+            if _fixture_is_allowed_for_date_scope(f, allowed_competition_ids)
+        ]
+        w, sf, sr = _ingest_response(filtered, snapshots)
         written += w
         skipped_final += sf
         skipped_fresh += sr
         logger.info(
-            "date=%s: api=1 fixtures=%d written=%d skipped_final=%d skipped_fresh=%d",
-            iso, len(fixtures), w, sf, sr,
+            "date=%s: api=1 fixtures=%d filtered=%d written=%d skipped_final=%d skipped_fresh=%d",
+            iso, len(fixtures), len(filtered), w, sf, sr,
         )
-        cur = cur + timedelta(days=1)
-        time.sleep(API_SLEEP_SECONDS)
 
     return {
         "api_calls": api_calls,
