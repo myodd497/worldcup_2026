@@ -64,6 +64,7 @@ CURATED_TOP_COMPETITION_IDS: set[int] = {
     2,    # UEFA Champions League
     3,    # UEFA Europa League
     15,   # FIFA Club World Cup
+    1168, # FIFA Intercontinental Cup
     848,  # UEFA Europa Conference League
     13,   # CONMEBOL Libertadores (Americas Champions League)
     11,   # CONMEBOL Sudamericana (Americas Europa-equivalent)
@@ -100,15 +101,51 @@ CURATED_TOP_COMPETITION_IDS: set[int] = {
     301,  # UAE Pro League
     307,  # Saudi Pro League
 
-    # National cups (known/high-priority)
-    45,   # FA Cup
-    48,   # League Cup
-    66,   # Coupe de France
-    81,   # DFB Pokal
-    137,  # Coppa Italia
-    143,  # Copa del Rey
-    507,  # South Africa Cup (Nedbank Cup)
-    560,  # UAE Presidents Cup
+    # Domestic cups (up to top 3 most famous per top-10 European country)
+    # England
+    45,    # FA Cup
+    48,    # League Cup
+    528,   # Community Shield
+
+    # France
+    66,    # Coupe de France
+    65,    # Coupe de la Ligue
+    526,   # Trophee des Champions
+
+    # Germany
+    81,    # DFB Pokal
+    529,   # Super Cup
+    715,   # DFB Junioren Pokal
+
+    # Netherlands
+    90,    # KNVB Beker
+    543,   # Super Cup
+
+    # Portugal
+    96,    # Taca de Portugal
+    97,    # Taca da Liga
+    550,   # Super Cup
+
+    # Italy
+    137,   # Coppa Italia
+    547,   # Super Cup
+
+    # Spain
+    143,   # Copa del Rey
+    556,   # Super Cup
+    735,   # Copa Federacion
+
+    # Belgium (2 available)
+    147,   # Cup
+    519,   # Super Cup
+
+    # Turkey (2 available)
+    206,   # Turkiye Kupasi
+    551,   # Super Cup
+
+    # Russia (2 available)
+    237,   # Cup
+    663,   # Super Cup
 }
 
 # A finished match is immutable; never re-fetch.
