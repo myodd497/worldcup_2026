@@ -1,30 +1,46 @@
 """Planner Agent — single-call router for the football assistant.
 
-Replaces the old two-step (classify_intent + route_request) flow.
-One gpt-4o call decides:
+One LLM call (gpt-4o-mini with structured output) decides:
   - which specialist(s) to invoke (1-2)
   - the topic of the request (used for memory and confidence)
   - whether the request needs the LLM verifier afterwards
 
-Specialist set after the match_facts removal:
+Routing is a constrained classification problem — gpt-4o-mini handles it as well
+as gpt-4o once we lock the schema with Pydantic. We save the larger model for
+the quality-critical SQL generation step.
+
+Specialist set:
   bigquery | prediction | news | sentiment | rules | chat
 """
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 
-_MODEL = "gpt-4o"  # planning is the routing brain; bad routing = wrong specialist = wrong answer
-_llm: ChatOpenAI | None = None
+_MODEL = "gpt-4o-mini"  # routing is a 6-way classification; mini is plenty when schema-constrained
+_llm = None  # ChatOpenAI bound with structured output
 
 
-def _get_llm() -> ChatOpenAI:
+AgentName = Literal["bigquery", "prediction", "news", "sentiment", "rules", "chat"]
+
+
+class _PlanSchema(BaseModel):
+    agents: list[AgentName] = Field(..., description="1-2 specialists to invoke, ordered by primacy.")
+    primary_agent: AgentName = Field(..., description="The agent whose answer drives the reply.")
+    topic: str = Field(default="", description="Short noun phrase summarising the request.")
+    needs_verifier: bool = Field(default=False, description="Set true when bigquery is selected or numbers/lists are requested.")
+    reason: str = Field(default="", description="One short sentence explaining the routing.")
+
+
+def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
+        base = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
+        _llm = base.with_structured_output(_PlanSchema)
     return _llm
 
 
@@ -103,30 +119,17 @@ def plan_response(
         message=user_message,
     )
     try:
-        raw = _get_llm().invoke(prompt).content.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("` \n")
-            if raw.lower().startswith("json"):
-                raw = raw[4:].strip()
-        parsed = json.loads(raw)
-
-        agents = [a for a in parsed.get("agents", []) if a in AVAILABLE_AGENTS]
+        plan: _PlanSchema = _get_llm().invoke(prompt)
+        agents = [a for a in plan.agents if a in AVAILABLE_AGENTS][:2]
         if not agents:
             raise ValueError("planner returned no valid agents")
-        agents = agents[:2]
-
-        primary = parsed.get("primary_agent")
-        if primary not in agents:
-            primary = agents[0]
-
-        needs_verifier = bool(parsed.get("needs_verifier", "bigquery" in agents))
-
+        primary = plan.primary_agent if plan.primary_agent in agents else agents[0]
         return {
             "agents": agents,
             "primary_agent": primary,
-            "topic": str(parsed.get("topic") or ""),
-            "needs_verifier": needs_verifier,
-            "reason": str(parsed.get("reason") or ""),
+            "topic": plan.topic or "",
+            "needs_verifier": bool(plan.needs_verifier or "bigquery" in agents),
+            "reason": plan.reason or "",
         }
     except Exception:
         return _fallback_plan(user_message)
