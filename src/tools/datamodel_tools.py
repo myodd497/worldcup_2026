@@ -159,6 +159,59 @@ def run_sql_tool(sql: str, max_rows: int = _DEFAULT_MAX_ROWS) -> dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool: data_freshness
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FRESHNESS_CACHE: dict[str, Any] = {"ts": 0.0, "payload": None}
+_FRESHNESS_TTL_SECONDS = 300  # 5 min — avoid hammering BQ from every chat turn
+
+
+def data_freshness_tool() -> str:
+    """Return JSON with hours since the last successful ETL run + stale flag."""
+    import json as _json
+    import time
+    from datetime import datetime, timezone
+
+    now = time.time()
+    cached = _FRESHNESS_CACHE.get("payload")
+    if cached and (now - float(_FRESHNESS_CACHE.get("ts", 0))) < _FRESHNESS_TTL_SECONDS:
+        return cached
+
+    import os as _os
+    project = _os.environ.get("BIGQUERY_PROJECT_ID")
+    dataset = _os.environ.get("BIGQUERY_DATASET_ID")
+    if not project or not dataset:
+        return _json.dumps({"error": "BIGQUERY_PROJECT_ID/DATASET_ID not set", "is_stale": True})
+
+    sql = (
+        f"SELECT MAX(finished_at) AS last_success_ts "
+        f"FROM `{project}.{dataset}.etl_run_status` "
+        f"WHERE status = 'SUCCESS'"
+    )
+    try:
+        df = run_query(sql)
+        last_ts = df["last_success_ts"].iloc[0] if not df.empty else None
+        if last_ts is None or pd.isna(last_ts):
+            payload = _json.dumps({"last_success_ts": None, "hours_since_last_success": None, "is_stale": True})
+        else:
+            ts = last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+            payload = _json.dumps({
+                "last_success_ts": ts.isoformat(),
+                "hours_since_last_success": round(hours, 1),
+                "is_stale": hours > 6.0,
+            })
+    except Exception as exc:
+        payload = _json.dumps({"error": str(exc), "is_stale": True})
+
+    _FRESHNESS_CACHE["ts"] = now
+    _FRESHNESS_CACHE["payload"] = payload
+    return payload
+
+
 def dry_run_sql(sql: str) -> int:
     """BigQuery dry-run. Returns total_bytes_processed; raises on syntax/column errors."""
     from google.cloud import bigquery
