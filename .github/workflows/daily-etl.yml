@@ -1,8 +1,8 @@
-name: Daily ETL (12:21 UTC)
+name: ETL Every 3h (:33 UTC)
 
 on:
   schedule:
-    - cron: "21 12 * * *"
+    - cron: "33 */3 * * *"
   workflow_dispatch:
 
 # Prevent overlapping runs (manual + scheduled).
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   run-etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 150
 
     steps:
       - name: Checkout
