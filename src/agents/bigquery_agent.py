@@ -27,6 +27,7 @@ from langchain_openai import ChatOpenAI
 from src.agents.sql_few_shots import format_few_shots
 from src.data.datamodel.schema_retriever import search_schema_tool
 from src.tools.datamodel_tools import (
+    data_freshness_tool,
     describe_table_tool,
     run_sql_tool,
     sample_table_tool,
@@ -105,6 +106,18 @@ _TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "data_freshness",
+            "description": (
+                "Return how recently the data warehouse was refreshed by the ETL. "
+                "Call this FIRST whenever the question asks about today/yesterday/this week/live/recent data."
+                " If the last successful ETL run is older than 6 hours, you MUST caveat the answer with the staleness."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_sql",
             "description": (
                 "Execute a read-only BigQuery SELECT/WITH statement. Pre-flighted via "
@@ -134,6 +147,8 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
             return describe_table_tool(args["name"])
         if name == "sample_table":
             return sample_table_tool(args["name"], limit=args.get("limit", 5))
+        if name == "data_freshness":
+            return data_freshness_tool()
         if name == "run_sql":
             result = run_sql_tool(args["sql"])
             return json.dumps(result, default=str)
@@ -161,27 +176,28 @@ You are a senior BigQuery analyst for a World Cup 2026 football assistant.
 Every fact in your final answer MUST be grounded in rows you retrieved.
 
 ## Workflow (follow in order)
-1. If the question references a team or player by name, FIRST call `resolve_team` / `resolve_player` to get the canonical id. NEVER write `LOWER(team_name) LIKE '%...%'`.
-2. Use the retrieved schema block + example queries below — they are pre-selected for this question.
-3. Write ONE `run_sql` query. Prefer marts when one fits; fall back to facts only when no mart matches.
-4. If `run_sql` returns an error, READ it carefully and try ONE corrected query (max 2 repairs).
-5. Once you have the rows, write a concise markdown answer. Do not include the SQL.
+1. If the question references a team or player by NAME, FIRST call `resolve_team` / `resolve_player` to get the canonical id. NEVER write `LOWER(name) LIKE '%...%'`.
+2. If the question is time-sensitive (today, yesterday, this week, live, recent, latest), FIRST call `data_freshness` and caveat the answer when the warehouse is stale.
+3. Use the retrieved schema block + example queries below — they are pre-selected for this question. Read each table's **Usage hint** carefully; it contains domain rules you MUST follow.
+4. Write ONE `run_sql` query. Prefer marts when one fits; fall back to facts only when no mart matches.
+5. If `run_sql` returns an error, READ it carefully and try ONE corrected query (max 2 repairs).
+6. Once you have the rows, write a concise markdown answer. Do not include the SQL.
 
-## Hard rules
+## Universal rules
 - Always include a LIMIT for lists (default 25). Aggregations don't need it.
 - Snake_case columns. Primary keys are `<entity>_id`.
-- World Cup 2026: `competition_id = 1`, `season_year = 2026`. Use `is_wc2026_participant` for "WC 2026 teams".
-- `result` ∈ {'W','D','L'}. `match_status` ∈ {SCHEDULED, LIVE, FINISHED, POSTPONED, CANCELLED, ABANDONED}.
-- `mart_head_to_head` is keyed by (team_lo_id = LEAST(a,b), team_hi_id = GREATEST(a,b)).
-- For goals from `fact_match_event`, use `is_goal` (already excludes missed penalties).
-- For "last N matches for [team]": ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY match_date DESC) then filter rn <= N.
-- If filtering by team_id, the column lives on the fact/mart you are querying — use it directly. The dim_team JOIN is only for names.
+- If filtering by an entity id, the column lives on the fact/mart itself — use it directly. JOIN a dim only for human-readable names.
+- If the retrieved tables clearly cannot answer the question, say so plainly — do not fabricate.
 
-If the retrieved tables clearly cannot answer the question, say so plainly — do not fabricate.
+All domain-specific rules (enums, magic ids, partition keys, sorted pair keys, NULL handling) live in the per-table **Usage hint** sections below.
 """
 
 
-def _build_user_prompt(question: str, conversation_context: str | None) -> str:
+def _build_user_prompt(
+    question: str,
+    conversation_context: str | None,
+    repair: dict[str, Any] | None = None,
+) -> str:
     schema_block = search_schema_tool(question, top_k=5)
     few_shot_block = format_few_shots(question, k=3)
 
@@ -190,6 +206,16 @@ def _build_user_prompt(question: str, conversation_context: str | None) -> str:
         parts.append("## Conversation context\n" + conversation_context)
     parts.append(schema_block)
     parts.append(few_shot_block)
+    if repair:
+        prior_sql = "\n---\n".join(repair.get("prior_sql", []))[:2000]
+        parts.append(
+            "## Reviewer feedback on the previous attempt (MUST address)\n"
+            f"- Issues: {'; '.join(repair.get('issues', [])) or '(none)'}\n"
+            f"- Hint: {repair.get('hint', '')}\n"
+            f"- Previous answer (do NOT repeat verbatim):\n{repair.get('prior_answer', '')[:600]}\n"
+            f"- SQL previously tried:\n```sql\n{prior_sql}\n```\n"
+            "Write a NEW query that fixes the issues above. Do not repeat the same SQL."
+        )
     parts.append("## User question\n" + question)
     return "\n\n".join(parts)
 
@@ -198,11 +224,15 @@ def _make_llm() -> ChatOpenAI:
     return ChatOpenAI(model=_MODEL_NAME, temperature=0, max_retries=6, timeout=60).bind_tools(_TOOLS_SCHEMA)
 
 
-def _run_agent(question: str, conversation_context: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+def _run_agent(
+    question: str,
+    conversation_context: str | None = None,
+    repair: dict[str, Any] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     llm = _make_llm()
     messages: list[Any] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user",   "content": _build_user_prompt(question, conversation_context)},
+        {"role": "user",   "content": _build_user_prompt(question, conversation_context, repair=repair)},
     ]
     trace: list[dict[str, Any]] = []
     sql_attempts = 0
@@ -271,9 +301,13 @@ def _confidence(trace: list[dict[str, Any]]) -> tuple[float, str]:
     return 0.85, f"Answer grounded in {len(sql_calls)} SQL call(s), {total_rows} row(s) total."
 
 
-def run_structured(query: str, conversation_context: str | None = None) -> dict[str, Any]:
+def run_structured(
+    query: str,
+    conversation_context: str | None = None,
+    repair: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        answer, trace = _run_agent(query, conversation_context=conversation_context)
+        answer, trace = _run_agent(query, conversation_context=conversation_context, repair=repair)
     except Exception as exc:
         logger.exception("bigquery_agent failed")
         return {
