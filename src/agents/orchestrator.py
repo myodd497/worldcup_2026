@@ -15,6 +15,7 @@ Conversation context is supplied via `ConversationMemory` (rolling LLM summary
 """
 from __future__ import annotations
 
+import asyncio
 import operator
 from typing import Annotated, Any, TypedDict
 
@@ -154,28 +155,39 @@ _RUNNERS = {
 }
 
 
-def execute_node(state: OrchestratorState) -> OrchestratorState:
+async def execute_node(state: OrchestratorState) -> OrchestratorState:
     tracker = get_tracker()
-    outputs: dict[str, dict[str, Any]] = {}
-    for agent in state.get("selected_agents", ["chat"]):
+    selected = state.get("selected_agents", ["chat"]) or ["chat"]
+
+    async def _run_one(agent: str) -> tuple[str, dict[str, Any]]:
         runner = _RUNNERS.get(agent)
         if runner is None:
-            continue
+            return agent, {
+                "answer": f"Unknown agent '{agent}'.",
+                "confidence_score": 0.1,
+                "confidence_reason": "Unknown agent.",
+                "metadata": {"data_source": "error"},
+            }
         try:
-            outputs[agent] = runner(state)
+            # Runners are sync — push to threads so independent specialists run in parallel.
+            payload = await asyncio.to_thread(runner, state)
+            return agent, payload
         except Exception as exc:
-            outputs[agent] = {
+            return agent, {
                 "answer": f"{agent} agent failed: {exc}",
                 "confidence_score": 0.2,
                 "confidence_reason": f"{agent} execution failed.",
                 "metadata": {"data_source": "error", "error": str(exc)},
             }
+
+    results = await asyncio.gather(*[_run_one(a) for a in selected])
+    outputs: dict[str, dict[str, Any]] = {agent: payload for agent, payload in results}
     if not outputs:
         outputs["chat"] = _run_chat(state)
 
     tracker.log_step(
         "execute", status="executed",
-        input_data={"agents": state.get("selected_agents", [])},
+        input_data={"agents": selected, "parallel": True},
         output_data={
             agent: {
                 "confidence_score": p.get("confidence_score"),
@@ -220,35 +232,71 @@ def verify_node(state: OrchestratorState) -> OrchestratorState:
         verdict_dict = verdict.to_dict()
 
         if verdict.needs_repair and verdict.repair_hint:
-            # ONE repair attempt — feed the hint back to the BigQuery agent.
+            # ONE repair attempt — feed prior SQL + verifier hint to the BigQuery agent so it
+            # has full context of what was tried (instead of starting from scratch).
             from src.agents.bigquery_agent import run_structured as run_bq
-            repair_q = (
-                f"{state['user_message']}\n\n"
-                f"[Reviewer feedback to fix the previous attempt — address ALL items]\n"
-                f"- Issues: {'; '.join(verdict.issues) or '(none)'}\n"
-                f"- Hint: {verdict.repair_hint}"
-            )
+            repair_ctx = {
+                "hint": verdict.repair_hint,
+                "issues": list(verdict.issues),
+                "prior_sql": list(meta.get("sql_executed") or []),
+                "prior_answer": str(primary_payload.get("answer", "")),
+            }
             try:
-                repaired = run_bq(repair_q, conversation_context=state.get("conversation_context"))
+                repaired = run_bq(
+                    state["user_message"],
+                    conversation_context=state.get("conversation_context"),
+                    repair=repair_ctx,
+                )
                 if repaired and repaired.get("answer"):
                     outputs["bigquery"] = repaired
                     primary_payload = repaired
                     verdict_dict["repair_attempted"] = True
+                    # Re-verify the repaired answer so confidence reflects the new attempt.
+                    meta2 = repaired.get("metadata") or {}
+                    verdict2 = verify(
+                        question=state["user_message"],
+                        answer=str(repaired.get("answer", "")),
+                        sql_executed=list(meta2.get("sql_executed") or []),
+                        row_samples=list(meta2.get("row_samples") or []),
+                    )
+                    verdict_dict = {**verdict2.to_dict(), "repair_attempted": True}
+                    verdict = verdict2
             except Exception as exc:
                 verdict_dict["repair_error"] = str(exc)
 
-        # Verifier may downgrade the confidence.
-        if not verdict.grounded or not verdict.answers_question:
-            primary_payload = {
-                **primary_payload,
-                "confidence_score": min(
-                    float(primary_payload.get("confidence_score", 0.5) or 0.5),
-                    verdict.confidence,
-                ),
-                "confidence_reason": (
-                    f"Reviewer flagged issues: {'; '.join(verdict.issues) or 'low groundedness'}."
-                ),
-            }
+        # Verifier-driven confidence: trust the judge, not the heuristic.
+        primary_payload = {
+            **primary_payload,
+            "confidence_score": float(verdict.confidence),
+            "confidence_reason": (
+                f"Verifier: grounded={verdict.grounded}, answers_question={verdict.answers_question}."
+                + (f" Issues: {'; '.join(verdict.issues)}." if verdict.issues else "")
+            ),
+        }
+
+        # Self-consistency for ranking questions: a second independent SQL pass
+        # must agree on the top entity, otherwise downgrade confidence.
+        from src.agents.self_consistency import (
+            is_ranking_question,
+            run_self_consistency_check,
+        )
+        if verdict.grounded and verdict.answers_question and is_ranking_question(state["user_message"]):
+            sc = run_self_consistency_check(
+                question=state["user_message"],
+                primary_answer=str(primary_payload.get("answer", "")),
+                conversation_context=state.get("conversation_context"),
+            )
+            verdict_dict["self_consistency"] = sc
+            if not sc.get("consistent", True):
+                # Two independent SQL paths disagreed on the top item — flag the user.
+                primary_payload = {
+                    **primary_payload,
+                    "confidence_score": min(0.5, float(primary_payload["confidence_score"])),
+                    "confidence_reason": (
+                        f"Self-consistency check disagreed: alternative SQL returned "
+                        f"'{sc.get('second_top')}' vs primary '{sc.get('primary_top')}'."
+                    ),
+                }
 
     score = float(primary_payload.get("confidence_score", 0.6) or 0.6)
     score = max(0.0, min(1.0, score))
@@ -326,14 +374,22 @@ async def run_orchestrator(
     user_message: str,
     user_id: str,
     conversation_history: list[dict[str, str]] | None = None,
+    use_cache: bool = True,
 ) -> str:
     memory = ConversationMemory.from_messages(conversation_history)
     memory.append_user(user_message)
+    context = memory.context_block()
+
+    if use_cache:
+        from src.agents.answer_cache import lookup as _cache_lookup
+        cached = _cache_lookup(user_message, context=context)
+        if cached:
+            return cached
 
     state: OrchestratorState = {
         "user_id": user_id,
         "user_message": user_message,
-        "conversation_context": memory.context_block(),
+        "conversation_context": context,
         "topic": "",
         "selected_agent": "",
         "selected_agents": [],
@@ -348,4 +404,36 @@ async def run_orchestrator(
         "messages": [],
     }
     out = await _graph.ainvoke(state)
-    return out["final_reply"]
+    reply = out["final_reply"]
+
+    if use_cache and reply and float(out.get("confidence_score") or 0) >= 0.7:
+        # Only cache answers we're confident in.
+        from src.agents.answer_cache import store as _cache_store
+        _cache_store(user_message, reply, context=context)
+
+    return reply
+
+
+async def run_orchestrator_full(
+    user_message: str,
+    user_id: str,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Like `run_orchestrator` but returns the full final state (no cache).
+
+    Useful for eval harnesses and observability — exposes the SQL trace,
+    verifier verdict, selected agents, and confidence.
+    """
+    memory = ConversationMemory.from_messages(conversation_history)
+    memory.append_user(user_message)
+    state: OrchestratorState = {
+        "user_id": user_id,
+        "user_message": user_message,
+        "conversation_context": memory.context_block(),
+        "topic": "", "selected_agent": "", "selected_agents": [],
+        "needs_verifier": False, "agent_outputs": {}, "agent_payload": {},
+        "verifier_verdict": {}, "confidence_score": 0.0,
+        "confidence_label": "low", "confidence_reason": "",
+        "final_reply": "", "messages": [],
+    }
+    return await _graph.ainvoke(state)
