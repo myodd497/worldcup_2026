@@ -329,13 +329,33 @@ def _score(shot: FewShot, q_tokens: set[str]) -> float:
 
 
 def select_few_shots(question: str, k: int = 3) -> list[FewShot]:
+    """Hybrid retrieval: semantic embeddings + keyword tag overlap as tiebreaker."""
+    from src.agents.embeddings import cosine, embed, embed_one
+
     q_tokens = _tokens(question)
-    scored = sorted(
-        ((s, _score(s, q_tokens)) for s in FEW_SHOTS),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )
-    return [s for s, sc in scored if sc > 0][:k]
+    kw = {i: _score(s, q_tokens) for i, s in enumerate(FEW_SHOTS)}
+
+    q_vec = embed_one((question or "").strip())
+    sem: dict[int, float] = {}
+    if q_vec is not None:
+        shot_vecs = embed([f"{s.question} | tags: {', '.join(s.tags)}" for s in FEW_SHOTS])
+        for i, vec in enumerate(shot_vecs):
+            sem[i] = cosine(q_vec, vec) if vec is not None else 0.0
+
+    def _final(i: int) -> float:
+        k_norm = min(1.0, kw[i] / 5.0)
+        if sem:
+            return 0.75 * sem.get(i, 0.0) + 0.25 * k_norm
+        return k_norm
+
+    ranked = sorted(range(len(FEW_SHOTS)), key=_final, reverse=True)
+    out: list[FewShot] = []
+    for i in ranked:
+        if _final(i) > 0:
+            out.append(FEW_SHOTS[i])
+        if len(out) >= k:
+            break
+    return out
 
 
 def format_few_shots(question: str, k: int = 3) -> str:
