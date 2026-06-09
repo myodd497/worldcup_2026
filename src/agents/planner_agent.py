@@ -63,7 +63,7 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 - Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
-- Set `needs_verifier = true` whenever `bigquery` is selected, OR when the request asks for specific numbers/lists.
+- Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
 - `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
 
 ## Return schema (JSON only, no prose)
