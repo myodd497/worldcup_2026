@@ -633,7 +633,9 @@ h1 {{
     max-width: 100%;
     text-align: center;
     overflow-x: auto;
+    overflow-y: auto;
     height: 100%;
+    max-height: 420px;
     box-sizing: border-box;
 }}
 .standings-header {{
@@ -699,7 +701,9 @@ h1 {{
     max-width: 100%;
     text-align: center;
     overflow-x: auto;
+    overflow-y: auto;
     height: 100%;
+    max-height: 420px;
     box-sizing: border-box;
 }}
 .topscorers-table {{
