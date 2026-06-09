@@ -467,7 +467,7 @@ def _build_world_cup_css() -> str:
     z-index: 1;
     padding-left: 10% !important;
     padding-right: 10% !important;
-    padding-top: 0.5rem !important;
+    padding-top: 0.2rem !important;
     max-width: 100% !important;
     display: flex;
     flex-direction: column;
