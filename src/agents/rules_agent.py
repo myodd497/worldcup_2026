@@ -28,6 +28,8 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_config import create_chat_model
+
 logger = logging.getLogger(__name__)
 
 # ── Load regulations text ───────────────────────────────────────────────────
@@ -69,8 +71,7 @@ def _system_prompt() -> str:
             "Politely tell the user you cannot access the regulations document right now."
         )
 
-    # Use the full regulations text — gpt-4o-mini has a 128K context window,
-    # and the regulations are ~128K chars (~32K tokens), well within limits.
+    # Use the full regulations text; the document is ~128K chars (~32K tokens).
     return (
         "You are an expert on the FIFA World Cup 2026™ official regulations.\n"
         "You have access to the full Regulations document below.\n"
@@ -97,7 +98,7 @@ def _get_llm() -> ChatOpenAI:
     """Lazy-initialize the LLM client."""
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        _llm = create_chat_model("simple", temperature=0)
     return _llm
 
 
@@ -135,7 +136,7 @@ def run_structured(query: str) -> dict:
         answer = _get_llm().invoke(messages).content.strip()
 
         # Confidence: moderate-high since the LLM has the full regulations
-        # and gpt-4o-mini is reliable for retrieval tasks.
+        # and the simple tier is reliable for retrieval tasks.
         return {
             "answer": answer,
             "confidence_score": 0.80,
