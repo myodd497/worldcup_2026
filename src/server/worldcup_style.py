@@ -480,10 +480,29 @@ def _build_world_cup_css() -> str:
     margin: 0 auto;
 }}
 
-/* ── Center the chat messages ── */
+/* ── Chat area card wrapper ── */
 [data-testid="stChatMessageContainer"] {{
     max-width: 700px;
     margin: 0 auto;
+    background: linear-gradient(180deg, rgba(10, 31, 46, 0.4) 0%, rgba(15, 26, 46, 0.3) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.08);
+    border-radius: 16px;
+    padding: 16px;
+    margin: 8px auto 12px auto;
+    max-height: 55vh;
+    overflow-y: auto;
+}}
+
+/* ── Subtitle inside chat card ── */
+[data-testid="stChatMessageContainer"]::before {{
+    content: "⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!";
+    display: block;
+    text-align: center;
+    color: #888;
+    font-size: 0.78em;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 8px;
 }}
 
 /* ── Widen the main block container to use more screen width ── */

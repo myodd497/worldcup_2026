@@ -123,16 +123,13 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
-# ── Title area: trophy logo + title + subtitle, all centered (above cards) ──
+# ── Title area: trophy logo + title, all centered (above cards) ──
 st.markdown(
     '<div style="text-align:center;margin-top:4px;margin-bottom:12px;">'
     '<div style="display:flex;align-items:center;justify-content:center;gap:8px;">'
     f'{world_cup_header_html()}'
     '<h1 style="margin:0;padding:0;display:inline;">World Cup 2026</h1>'
     '</div>'
-    '<p style="color:#aaa;font-size:0.85em;margin:4px 0 0 0;">'
-    '⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!'
-    '</p>'
     '</div>',
     unsafe_allow_html=True,
 )
