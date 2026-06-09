@@ -474,10 +474,14 @@ def _build_world_cup_css() -> str:
     align-items: center;
 }}
 
-/* ── Center the chat input area ── */
+/* ── Center the chat input area (as a card) ── */
 [data-testid="stChatInput"] {{
     max-width: 700px;
-    margin: 0 auto;
+    margin: 0 auto 16px auto;
+    background: linear-gradient(180deg, rgba(10, 31, 46, 0.4) 0%, rgba(15, 26, 46, 0.3) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.1);
+    border-radius: 16px;
+    padding: 8px 12px;
 }}
 
 /* ── Chat area card wrapper ── */
