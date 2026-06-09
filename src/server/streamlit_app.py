@@ -128,7 +128,7 @@ st.markdown(
     '<div style="text-align:center;margin-top:4px;margin-bottom:12px;">'
     '<div style="display:flex;align-items:center;justify-content:center;gap:8px;">'
     f'{world_cup_header_html()}'
-    '<h1 style="margin:0;padding:0;display:inline;">World Cup 2026 Chat</h1>'
+    '<h1 style="margin:0;padding:0;display:inline;">World Cup 2026</h1>'
     '</div>'
     '<p style="color:#aaa;font-size:0.85em;margin:4px 0 0 0;">'
     '⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!'
