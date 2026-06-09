@@ -502,8 +502,8 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
             SUM(fps.assists) AS assists,
             SAFE_DIVIDE(SUM(fps.passes_accurate), SUM(fps.passes_total)) * 100 AS pass_accuracy,
             SUM(fps.dribbles_success) AS dribbles,
-            AVG(fps.rating) AS rating,
-            SUM(fps.minutes_played) / 90.0 AS matches_90
+            SUM(fps.tackles_total) AS tackles,
+            SUM(fps.interceptions) AS interceptions
         FROM `{project}.{dataset}.fact_player_match_stat` fps
         JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
         WHERE 1=1
@@ -520,8 +520,8 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
     if df.empty or len(df) < 2:
         return None
 
-    dimensions = ["goals", "assists", "pass_accuracy", "dribbles", "rating", "matches_90"]
-    labels = ["Goals", "Assists", "Pass Acc %", "Dribbles", "Rating (x10)", "90s Played"]
+    dimensions = ["goals", "assists", "pass_accuracy", "dribbles", "tackles", "interceptions"]
+    labels = ["Goals", "Assists", "Pass Acc %", "Dribbles", "Tackles", "Interceptions"]
 
     # Normalize values to 0-100 scale for radar
     max_vals = {}
@@ -535,8 +535,6 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
         values = []
         for dim in dimensions:
             val = row[dim] or 0
-            if dim == "rating":
-                val = val * 10  # scale 0-10 to 0-100
             values.append(min(val / max_vals[dim] * 100, 100))
 
         fig.add_trace(go.Scatterpolar(
