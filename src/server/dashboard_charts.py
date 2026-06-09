@@ -257,10 +257,10 @@ def team_attack_defense_scatter(
 
     fig = go.Figure()
 
-    # Quadrant backgrounds
-    fig.add_shape(type="rect", x0=avg_gf, x1=AXIS_MAX, y0=0, y1=avg_ga,
+    # Quadrant backgrounds — start from -1 instead of 0
+    fig.add_shape(type="rect", x0=avg_gf, x1=AXIS_MAX, y0=-1, y1=avg_ga,
                   fillcolor="rgba(80,200,120,0.08)", line_width=0, layer="below")
-    fig.add_shape(type="rect", x0=0, x1=avg_gf, y0=avg_ga, y1=AXIS_MAX,
+    fig.add_shape(type="rect", x0=-1, x1=avg_gf, y0=avg_ga, y1=AXIS_MAX,
                   fillcolor="rgba(255,100,100,0.06)", line_width=0, layer="below")
 
     # Average lines
@@ -358,8 +358,8 @@ def team_attack_defense_scatter(
         yaxis_title="Goals Conceded / Game",
         height=400,
         margin=dict(l=10, r=10, t=46, b=10),
-        xaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
-        yaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
+        xaxis=dict(range=[-1, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
+        yaxis=dict(range=[-1, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
         legend=dict(
             orientation="h",
             yanchor="bottom",
