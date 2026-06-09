@@ -539,70 +539,74 @@ h1 {{
     text-transform: uppercase;
 }}
 
-/* ── Next Match card (main page, horizontal layout) ── */
+/* ── Next Match card (centered, compact vertical layout) ── */
 .next-match-card {{
-    background: linear-gradient(135deg, rgba(255, 215, 0, 0.06) 0%, rgba(10, 31, 46, 0.5) 100%);
-    border: 1px solid rgba(255, 215, 0, 0.15);
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 16px 20px;
-    margin: 4px 0 16px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 24px;
-    flex-wrap: wrap;
+    padding: 14px 16px;
+    margin: 4px auto 16px auto;
+    max-width: 360px;
     text-align: center;
 }}
+.next-match-round {{
+    font-size: 0.65em;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 6px;
+}}
 .next-match-countdown {{
-    font-size: 1.6em;
+    font-size: 1.3em;
     font-weight: 800;
     color: #f0c040;
     line-height: 1.2;
-    white-space: nowrap;
 }}
 .next-match-countdown-sub {{
-    font-size: 0.7em;
-    color: #888;
+    font-size: 0.68em;
+    color: #777;
+    margin-bottom: 10px;
 }}
 .next-match-teams {{
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
+    gap: 8px;
+    margin: 8px 0;
 }}
 .next-match-team {{
     text-align: center;
-    min-width: 90px;
+    min-width: 80px;
 }}
 .next-match-flag {{
-    font-size: 1.5em;
+    font-size: 1.4em;
     display: block;
 }}
 .next-match-name {{
-    font-size: 0.8em;
+    font-size: 0.78em;
     font-weight: 700;
     color: #e0e0e0;
     display: block;
     margin-top: 2px;
 }}
 .next-match-players {{
-    margin-top: 3px;
+    margin-top: 2px;
     color: #ccc;
-    font-size: 0.72em;
+    font-size: 0.68em;
 }}
 .next-match-vs {{
-    font-size: 0.65em;
+    font-size: 0.6em;
     font-weight: 700;
-    color: rgba(255, 215, 0, 0.45);
+    color: rgba(255, 215, 0, 0.4);
     align-self: center;
 }}
 .next-match-meta {{
-    text-align: center;
-    font-size: 0.72em;
-    color: #aaa;
-    line-height: 1.5;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
-    padding-left: 20px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.68em;
+    color: #999;
+    line-height: 1.6;
 }}
 .next-match-meta-row {{
     padding: 1px 0;
@@ -1162,14 +1166,13 @@ def _build_next_match_card(data: dict) -> str:
     home_players_html = _player_row(data.get("home_players", []))
     away_players_html = _player_row(data.get("away_players", []))
 
-    round_line = f'<div style="font-size:0.75em;color:#aaa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">{round_label}</div>' if round_label else ""
+    round_line = f'<div class="next-match-round">{round_label}</div>' if round_label else ""
 
     return (
 f"""<div class="next-match-card">
     {round_line}
     <div class="next-match-countdown">{countdown_text}</div>
-    <div class="next-match-countdown-sub">{countdown_sub}</div>""" +
-f"""
+    <div class="next-match-countdown-sub">{countdown_sub}</div>
     <div class="next-match-teams">
         <div class="next-match-team">
             <span class="next-match-flag">{home_flag}</span>
@@ -1182,8 +1185,7 @@ f"""
             <span class="next-match-name">{away_team}</span>
             <div class="next-match-players">{away_players_html}</div>
         </div>
-    </div>""" +
-f"""
+    </div>
     <div class="next-match-meta">
         <div class="next-match-meta-row">📅 {match_date_str[:10] if match_date_str else 'TBD'}</div>
         <div class="next-match-meta-row">🏟️ {venue_full}</div>
