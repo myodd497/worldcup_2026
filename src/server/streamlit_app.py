@@ -115,6 +115,23 @@ if _startup_etl_enabled():
             _etl_bootstrap_error = str(exc)
 
 
+def _run_orchestrator_sync(
+    user_message: str,
+    user_id: str,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> str:
+    """Synchronous wrapper around async run_orchestrator for Streamlit."""
+    return asyncio.run(run_orchestrator(user_message, user_id, conversation_history))
+
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "user_id" not in st.session_state:
+    import uuid
+    st.session_state.user_id = str(uuid.uuid4())
+
+
 st.set_page_config(page_title="🏆 World Cup 2026 Chat", page_icon="🏆", layout="centered")
 
 # ── Inject custom World Cup CSS (trophy background, glass chat bubbles, gold accents, animations) ──
@@ -182,64 +199,65 @@ with _tab_dashboard:
             group_standings_chart, player_comparison_radar, get_available_players,
         )
         _charts_ok = True
-    except ImportError:
+    except ImportError as e:
         _charts_ok = False
-        st.warning("⚠️ Plotly is not installed. Charts unavailable. Add `plotly` to requirements.txt.")
+        st.warning(f"⚠️ Charts unavailable. Error: {e}")
+
     if _charts_ok:
         _c1, _c2 = st.columns([1, 1], gap="small")
-    with _c1:
-        fig1 = top_scorers_bar_chart()
-        if fig1:
-            st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.caption("Chart data not available yet.")
-    with _c2:
-        fig2 = team_attack_defense_scatter()
-        if fig2:
-            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.caption("Chart data not available yet.")
-
-    # ── Row 3: Group Standings │ Player Comparison Radar ──
-    _c3, _c4 = st.columns([1, 1], gap="small")
-    with _c3:
-        fig3 = group_standings_chart(st.session_state.get("selected_group", "A"))
-        if fig3:
-            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.caption("Chart data not available yet.")
-    with _c4:
-        # Player comparison
-        players = get_available_players()
-        if len(players) >= 2:
-            if "radar_p1" not in st.session_state:
-                st.session_state.radar_p1 = players[0]
-            if "radar_p2" not in st.session_state:
-                st.session_state.radar_p2 = players[1] if len(players) > 1 else players[0]
-            _p1, _p2 = st.columns(2)
-            with _p1:
-                if players:
-                    def _on_p1_change():
-                        st.session_state.radar_p1 = st.session_state.radar_p1_key  # type: ignore[attr-defined]
-                    st.selectbox("Player 1", players,
-                                 index=players.index(st.session_state.radar_p1) if st.session_state.radar_p1 in players else 0,
-                                 key="radar_p1_key", label_visibility="collapsed",
-                                 on_change=_on_p1_change)
-            with _p2:
-                if players:
-                    def _on_p2_change():
-                        st.session_state.radar_p2 = st.session_state.radar_p2_key  # type: ignore[attr-defined]
-                    st.selectbox("Player 2", players,
-                                 index=players.index(st.session_state.radar_p2) if st.session_state.radar_p2 in players else min(1, len(players)-1),
-                                 key="radar_p2_key", label_visibility="collapsed",
-                                 on_change=_on_p2_change)
-            fig4 = player_comparison_radar(st.session_state.radar_p1, st.session_state.radar_p2)
-            if fig4:
-                st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+        with _c1:
+            fig1 = top_scorers_bar_chart()
+            if fig1:
+                st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
             else:
                 st.caption("Chart data not available yet.")
-        else:
-            st.caption("Not enough player data for comparison.")
+        with _c2:
+            fig2 = team_attack_defense_scatter()
+            if fig2:
+                st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Chart data not available yet.")
+
+        # ── Row 3: Group Standings │ Player Comparison Radar ──
+        _c3, _c4 = st.columns([1, 1], gap="small")
+        with _c3:
+            fig3 = group_standings_chart(st.session_state.get("selected_group", "A"))
+            if fig3:
+                st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Chart data not available yet.")
+        with _c4:
+            # Player comparison
+            players = get_available_players()
+            if len(players) >= 2:
+                if "radar_p1" not in st.session_state:
+                    st.session_state.radar_p1 = players[0]
+                if "radar_p2" not in st.session_state:
+                    st.session_state.radar_p2 = players[1] if len(players) > 1 else players[0]
+                _p1, _p2 = st.columns(2)
+                with _p1:
+                    if players:
+                        def _on_p1_change():
+                            st.session_state.radar_p1 = st.session_state.radar_p1_key  # type: ignore[attr-defined]
+                        st.selectbox("Player 1", players,
+                                     index=players.index(st.session_state.radar_p1) if st.session_state.radar_p1 in players else 0,
+                                     key="radar_p1_key", label_visibility="collapsed",
+                                     on_change=_on_p1_change)
+                with _p2:
+                    if players:
+                        def _on_p2_change():
+                            st.session_state.radar_p2 = st.session_state.radar_p2_key  # type: ignore[attr-defined]
+                        st.selectbox("Player 2", players,
+                                     index=players.index(st.session_state.radar_p2) if st.session_state.radar_p2 in players else min(1, len(players)-1),
+                                     key="radar_p2_key", label_visibility="collapsed",
+                                     on_change=_on_p2_change)
+                fig4 = player_comparison_radar(st.session_state.radar_p1, st.session_state.radar_p2)
+                if fig4:
+                    st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.caption("Chart data not available yet.")
+            else:
+                st.caption("Not enough player data for comparison.")
 
     if _etl_bootstrap_error:
         st.warning(f"Startup ETL failed. Details: {_etl_bootstrap_error}")
