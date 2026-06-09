@@ -18,7 +18,8 @@ def _get_llm() -> ChatOpenAI:
     """Lazy-initialize the LLM client."""
     global _llm
     if _llm is None:
-        _llm = create_chat_model("simple", temperature=0)
+        # Cap output to keep replies WhatsApp-friendly and avoid DeepSeek verbosity.
+        _llm = create_chat_model("simple", temperature=0, max_tokens=400)
     return _llm
 
 
