@@ -28,6 +28,8 @@ from src.server.worldcup_style import (
     inject_flag_emojis,
     inject_player_images,
     get_next_match_html,
+    get_standings_html,
+    get_standings_groups,
 )
 from src.tools.bigquery_tools import run_query
 
@@ -121,8 +123,31 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
-# ── Next Match card (above the title on main page) ──
-st.markdown(get_next_match_html(), unsafe_allow_html=True)
+# ── Match & Standings cards side-by-side (above the title on main page) ──
+_col1, _col2 = st.columns([1, 1])
+with _col1:
+    st.markdown(get_next_match_html(), unsafe_allow_html=True)
+with _col2:
+    # Default group selector
+    if "selected_group" not in st.session_state:
+        groups = get_standings_groups()
+        st.session_state.selected_group = groups[0] if groups else "A"
+
+    st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
+
+    # Group selector buttons
+    groups = get_standings_groups()
+    if groups:
+        _cols = st.columns(len(groups))
+        for i, g in enumerate(groups):
+            with _cols[i]:
+                if st.button(
+                    g, key=f"grp_{g}",
+                    type="primary" if g == st.session_state.selected_group else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state.selected_group = g
+                    st.rerun()
 
 # ── Title with trophy icon image ──
 st.markdown(

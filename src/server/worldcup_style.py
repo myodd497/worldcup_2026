@@ -612,6 +612,109 @@ h1 {{
     padding: 1px 0;
 }}
 
+/* ── Standings card (side-by-side with next match) ── */
+.standings-card {{
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.2);
+    border-radius: 14px;
+    padding: 14px 16px;
+    max-width: 420px;
+    text-align: center;
+    overflow-x: auto;
+}}
+.standings-header {{
+    font-size: 0.7em;
+    color: #f0c040;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 10px;
+    font-weight: 700;
+}}
+.standings-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.65em;
+    color: #ccc;
+}}
+.standings-table th {{
+    color: #888;
+    font-weight: 600;
+    padding: 3px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+}}
+.standings-table td {{
+    padding: 2px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    white-space: nowrap;
+}}
+.standings-rank {{
+    font-weight: 700;
+    color: #aaa;
+    width: 18px;
+}}
+.standings-team {{
+    text-align: left !important;
+    font-weight: 600;
+    color: #e0e0e0;
+}}
+.standings-stat {{
+    text-align: center;
+    color: #aaa;
+    width: 22px;
+}}
+.standings-pts {{
+    text-align: center;
+    font-weight: 800;
+    color: #f0c040;
+    width: 24px;
+}}
+.standings-row-qualify {{
+    background: rgba(255, 215, 0, 0.04);
+}}
+.standings-row-qualify .standings-rank {{
+    color: #f0c040;
+}}
+
+/* ── Card wrapper for side-by-side layout ── */
+.cards-wrapper {{
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin: 4px 0 16px 0;
+}}
+
+/* ── Group selector buttons ── */
+.standings-group-selector {{
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}}
+.standings-group-btn {{
+    background: rgba(255, 215, 0, 0.08);
+    border: 1px solid rgba(255, 215, 0, 0.2);
+    color: #ccc;
+    padding: 3px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.7em;
+    font-weight: 600;
+    transition: all 0.15s;
+}}
+.standings-group-btn:hover {{
+    background: rgba(255, 215, 0, 0.18);
+    color: #fff;
+}}
+.standings-group-btn.active {{
+    background: rgba(255, 215, 0, 0.2);
+    border-color: rgba(255, 215, 0, 0.5);
+    color: #f0c040;
+}}
+
 /* ── Star confidence ratings ── */
 .confidence-stars {{
     display: inline-flex;
@@ -1202,6 +1305,135 @@ def _no_match_fallback_html() -> str:
         '<div style="text-align:center;color:#aaa;padding:16px;">'
         '🏟️ No upcoming match found.<br>'
         '<small>Check back soon for the full schedule.</small>'
+        '</div>'
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Standings card — queries BigQuery for group standings with group selector
+# ---------------------------------------------------------------------------
+
+_standings_cache: dict[str, list[dict]] = {}
+_standings_cache_ts: float = 0.0
+_standings_groups_cache: list[str] = []
+
+
+def get_standings_groups() -> list[str]:
+    """Return available group names for WC2026."""
+    global _standings_groups_cache, _standings_cache_ts
+    import time as _time
+    now = _time.time()
+    if _standings_groups_cache and (now - _standings_cache_ts) < 300:
+        return _standings_groups_cache
+
+    try:
+        from src.tools.bigquery_tools import run_query
+        project = os.environ.get("BIGQUERY_PROJECT_ID")
+        dataset = os.environ.get("BIGQUERY_DATASET_ID")
+        if not project or not dataset:
+            return ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+        sql = f"""
+            SELECT DISTINCT group_name
+            FROM `{project}.{dataset}.fact_standings_snapshot`
+            WHERE competition_id = 1 AND season_year = 2026
+            ORDER BY group_name
+        """
+        df = run_query(sql)
+        if df.empty:
+            return ["A", "B", "C", "D", "E", "F", "G", "H"]
+        _standings_groups_cache = [str(g) for g in df["group_name"].tolist()]
+        _standings_cache_ts = now
+        return _standings_groups_cache
+    except Exception:
+        return ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+
+def get_standings_html(group_name: str) -> str:
+    """Query BigQuery for standings of a given group and return styled HTML card."""
+    try:
+        from src.tools.bigquery_tools import run_query
+        project = os.environ.get("BIGQUERY_PROJECT_ID")
+        dataset = os.environ.get("BIGQUERY_DATASET_ID")
+        if not project or not dataset:
+            return _no_standings_fallback_html()
+
+        sql = f"""
+            SELECT
+                standing_rank, team_name,
+                points, played, wins, draws, losses, goals_for, goals_against, goal_diff
+            FROM `{project}.{dataset}.mart_tournament_state`
+            WHERE competition_id = 1
+              AND season_year = 2026
+              AND LOWER(group_name) = LOWER('{group_name.replace("'", "''")}')
+            ORDER BY standing_rank ASC
+        """
+        df = run_query(sql)
+        if df.empty:
+            return _no_standings_fallback_html()
+
+        rows = df.to_dict(orient="records")
+        return _build_standings_card(group_name, rows)
+    except Exception:
+        return _no_standings_fallback_html()
+
+
+def _build_standings_card(group_name: str, rows: list[dict]) -> str:
+    """Build an HTML standings card for a group."""
+    rows_html = ""
+    for i, row in enumerate(rows):
+        rank = int(row.get("standing_rank", i + 1))
+        team = str(row.get("team_name", ""))
+        flag = get_flag(team) or ""
+        pts = int(row.get("points", 0) or 0)
+        mp = int(row.get("played", 0) or 0)
+        w = int(row.get("wins", 0) or 0)
+        d = int(row.get("draws", 0) or 0)
+        l = int(row.get("losses", 0) or 0)
+        gf = int(row.get("goals_for", 0) or 0)
+        ga = int(row.get("goals_against", 0) or 0)
+        gd = int(row.get("goal_diff", 0) or 0)
+        gd_str = f"+{gd}" if gd > 0 else str(gd)
+
+        # Highlight top 2 (qualifying spots) with a subtle gold tint
+        row_class = "standings-row-qualify" if rank <= 2 else ""
+        rows_html += (
+            f'<tr class="{row_class}">'
+            f'<td class="standings-rank">{rank}</td>'
+            f'<td class="standings-team">{flag} {team}</td>'
+            f'<td class="standings-stat">{mp}</td>'
+            f'<td class="standings-stat">{w}</td>'
+            f'<td class="standings-stat">{d}</td>'
+            f'<td class="standings-stat">{l}</td>'
+            f'<td class="standings-stat">{gf}</td>'
+            f'<td class="standings-stat">{ga}</td>'
+            f'<td class="standings-stat">{gd_str}</td>'
+            f'<td class="standings-pts">{pts}</td>'
+            f'</tr>'
+        )
+
+    return f"""<div class="standings-card">
+    <div class="standings-header">GROUP {group_name.upper()}</div>
+    <table class="standings-table">
+        <thead>
+            <tr>
+                <th>#</th><th>Team</th><th>MP</th>
+                <th>W</th><th>D</th><th>L</th>
+                <th>GF</th><th>GA</th><th>GD</th><th>Pts</th>
+            </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+</div>"""
+
+
+def _no_standings_fallback_html() -> str:
+    return (
+        '<div class="standings-card">'
+        '<div style="text-align:center;color:#aaa;padding:16px;">'
+        '📊 Standings not available yet.<br>'
+        '<small>Check back once matches begin.</small>'
         '</div>'
         '</div>'
     )
