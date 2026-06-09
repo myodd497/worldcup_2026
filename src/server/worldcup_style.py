@@ -1642,7 +1642,7 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
                 )
                 GROUP BY player_name, team_name
                 ORDER BY total_value DESC
-                LIMIT 10
+                LIMIT 100
             """
         else:
             sql = f"""
@@ -1659,7 +1659,7 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
                   AND fps.{db_column} > 0
                 GROUP BY dp.player_name, dt.team_name
                 ORDER BY total_value DESC
-                LIMIT 10
+                LIMIT 100
             """
         df = run_query(sql)
         if df.empty:
