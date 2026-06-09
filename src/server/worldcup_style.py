@@ -1617,9 +1617,9 @@ def get_top_scorers_html(metric: str = "goals") -> str:
 
 
 def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
-    """Fetch top 10 players by a given metric from fact_player_match_stat.
+    """Fetch top players by a given metric from fact_player_match_stat.
     
-    Before June 11, 2026: uses a dummy game (match_id=1528286) for testing.
+    Before June 11, 2026: uses last 2 friendly matches for all WC2026 teams.
     On/after June 11, 2026: queries all WC2026 matches.
     
     The db_column can be a raw column name or a calculated expression
@@ -1636,8 +1636,30 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
         wc_start = date(2026, 6, 11)
 
         if today < wc_start:
-            # --dummy game for testing until WC starts
-            where_clause = "AND fps.match_id = 1528286"
+            # Last 2 friendly matches for all WC2026 teams
+            where_clause = f"""AND fps.match_id IN (
+                WITH wc_teams AS (
+                    SELECT team_id, team_name
+                    FROM `{project}.{dataset}.dim_team`
+                    WHERE is_wc2026_participant = TRUE
+                ),
+                team_matches AS (
+                    SELECT
+                        fm.match_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY wc.team_id
+                            ORDER BY fm.match_date DESC, fm.match_id DESC
+                        ) AS rn
+                    FROM `{project}.{dataset}.fact_match` fm
+                    JOIN wc_teams wc
+                        ON wc.team_id = fm.home_team_id OR wc.team_id = fm.away_team_id
+                    WHERE fm.competition_id != 1
+                        AND fm.match_status = 'FINISHED'
+                        AND fm.match_date < '2026-06-11'
+                        AND fm.home_goals IS NOT NULL
+                )
+                SELECT match_id FROM team_matches WHERE rn <= 2
+            )"""
         else:
             where_clause = "AND fps.competition_id = 1 AND fps.season_year = 2026"
 

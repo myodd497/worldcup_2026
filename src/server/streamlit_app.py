@@ -138,9 +138,10 @@ st.markdown(
 _tab_dashboard, _tab_chat = st.tabs(["📊 Dashboard", "💬 Chat Assistant"])
 
 # ═════════════════════════════════════════════
-# TAB 1: Dashboard — three cards side-by-side
+# TAB 1: Dashboard — cards + charts
 # ═════════════════════════════════════════════
 with _tab_dashboard:
+    # ── Row 1: Three data cards ──
     _col1, _col2, _col3 = st.columns([1, 1, 1], gap="small")
     with _col1:
         st.markdown(get_next_match_html(), unsafe_allow_html=True)
@@ -173,6 +174,67 @@ with _tab_dashboard:
                          index=metrics.index(st.session_state.selected_metric),
                          key="metric_dropdown_dk", label_visibility="collapsed",
                          on_change=_on_metric_change)
+
+    # ── Row 2: Top Scorers Bar Chart │ Attack vs Defense Scatter ──
+    from src.server.dashboard_charts import (
+        top_scorers_bar_chart, team_attack_defense_scatter,
+        group_standings_chart, player_comparison_radar, get_available_players,
+    )
+    _c1, _c2 = st.columns([1, 1], gap="small")
+    with _c1:
+        fig1 = top_scorers_bar_chart()
+        if fig1:
+            st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("Chart data not available yet.")
+    with _c2:
+        fig2 = team_attack_defense_scatter()
+        if fig2:
+            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("Chart data not available yet.")
+
+    # ── Row 3: Group Standings │ Player Comparison Radar ──
+    _c3, _c4 = st.columns([1, 1], gap="small")
+    with _c3:
+        fig3 = group_standings_chart(st.session_state.get("selected_group", "A"))
+        if fig3:
+            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("Chart data not available yet.")
+    with _c4:
+        # Player comparison
+        players = get_available_players()
+        if len(players) >= 2:
+            if "radar_p1" not in st.session_state:
+                st.session_state.radar_p1 = players[0]
+            if "radar_p2" not in st.session_state:
+                st.session_state.radar_p2 = players[1] if len(players) > 1 else players[0]
+            _p1, _p2 = st.columns(2)
+            with _p1:
+                if players:
+                    def _on_p1_change():
+                        st.session_state.radar_p1 = st.session_state.radar_p1_key  # type: ignore[attr-defined]
+                    st.selectbox("Player 1", players,
+                                 index=players.index(st.session_state.radar_p1) if st.session_state.radar_p1 in players else 0,
+                                 key="radar_p1_key", label_visibility="collapsed",
+                                 on_change=_on_p1_change)
+            with _p2:
+                if players:
+                    def _on_p2_change():
+                        st.session_state.radar_p2 = st.session_state.radar_p2_key  # type: ignore[attr-defined]
+                    st.selectbox("Player 2", players,
+                                 index=players.index(st.session_state.radar_p2) if st.session_state.radar_p2 in players else min(1, len(players)-1),
+                                 key="radar_p2_key", label_visibility="collapsed",
+                                 on_change=_on_p2_change)
+            fig4 = player_comparison_radar(st.session_state.radar_p1, st.session_state.radar_p2)
+            if fig4:
+                st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Chart data not available yet.")
+        else:
+            st.caption("Not enough player data for comparison.")
+
     if _etl_bootstrap_error:
         st.warning(f"Startup ETL failed. Details: {_etl_bootstrap_error}")
 
