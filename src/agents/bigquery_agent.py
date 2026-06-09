@@ -222,7 +222,7 @@ def _build_user_prompt(
 
 def _make_llm() -> ChatOpenAI:
     import os
-    tier = os.getenv("BIGQUERY_LLM_TIER", "simple")  # SQL gen on Flash is fast and good enough with few-shots
+    tier = os.getenv("BIGQUERY_LLM_TIER", "complex")  # SQL gen on Flash is fast and good enough with few-shots
     return create_chat_model(tier, temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
 
 
