@@ -22,8 +22,9 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_config import create_chat_model
 
-_SUMMARY_MODEL = "gpt-4o-mini"  # cheap; summarisation is a low-stakes task
+
 _RAW_TURNS_KEPT = 4               # always show the last 4 raw turns
 _SUMMARISE_AFTER = 8              # compress older turns once history exceeds this
 
@@ -34,7 +35,7 @@ _summary_llm: ChatOpenAI | None = None
 def _llm() -> ChatOpenAI:
     global _summary_llm
     if _summary_llm is None:
-        _summary_llm = ChatOpenAI(model=_SUMMARY_MODEL, temperature=0)
+        _summary_llm = create_chat_model("simple", temperature=0)
     return _summary_llm
 
 
