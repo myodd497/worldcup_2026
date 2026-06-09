@@ -4,7 +4,7 @@ Architecture (state-of-the-art):
   1. resolve_entity (deterministic team/player name → id)
   2. search_schema  (retrieves only the 3-5 relevant tables)
   3. few_shots      (retrieved Q→SQL examples — not hardcoded recipes)
-  4. SQL generator  (gpt-4o, function-calling)
+    4. SQL generator  (complex LLM tier, function-calling)
   5. run_sql        (validate → dry-run + cost guard → execute)
   6. structured repair loop on failure (max 2 attempts with the actual error)
   7. compose grounded markdown answer
@@ -24,6 +24,7 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_config import create_chat_model
 from src.agents.sql_few_shots import format_few_shots
 from src.data.datamodel.schema_retriever import search_schema_tool
 from src.tools.datamodel_tools import (
@@ -36,7 +37,6 @@ from src.tools.entity_resolver import resolve_player_tool, resolve_team_tool
 
 logger = logging.getLogger(__name__)
 
-_MODEL_NAME = "gpt-4o"          # SQL generation is the quality-critical step
 _MAX_TOOL_TURNS = 10
 _MAX_SQL_ATTEMPTS = 3           # initial + 2 repairs
 
@@ -221,7 +221,7 @@ def _build_user_prompt(
 
 
 def _make_llm() -> ChatOpenAI:
-    return ChatOpenAI(model=_MODEL_NAME, temperature=0, max_retries=6, timeout=60).bind_tools(_TOOLS_SCHEMA)
+    return create_chat_model("complex", temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
 
 
 def _run_agent(
