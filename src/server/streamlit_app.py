@@ -389,9 +389,10 @@ with _tab_chat:
             'background:rgba(30,144,255,0.08);border-left:3px solid #1e90ff;'
             'border-radius:0 8px 8px 0;font-size:0.9rem;line-height:1.6;">'
             '<span style="color:#f0c040;font-weight:700;">💡 Try asking:</span><br>'
-            '• <em>"Who are the top scorers so far?"</em><br>'
-            '• <em>"Predict the winner of Group C"</em><br>'
-            '• <em>"Show me the latest news about Portugal"</em>'
+            '• <em>"List the next games of Portugal"</em><br>'
+            '• <em>"List Yesterday results and goal scorers"</em><br>'
+            '• <em>"Who is the top scorer of the world cup?"</em><br>'
+            '• <em>"Who is the player with the most goal contributions in the Worl Cup?"</em>'
             '</div>',
             unsafe_allow_html=True,
         )
