@@ -134,158 +134,70 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Three cards side-by-side: Match | Standings | Top Scorers ──
-_col1, _col2, _col3 = st.columns([1, 1, 1], gap="small")
-with _col1:
-    st.markdown(get_next_match_html(), unsafe_allow_html=True)
-with _col2:
-    # Default group selector
-    groups = get_standings_groups()
-    if "selected_group" not in st.session_state:
-        st.session_state.selected_group = groups[0] if groups else "A"
-    if st.session_state.selected_group not in groups:
-        st.session_state.selected_group = groups[0] if groups else "A"
+# ── Two tabs: Dashboard (cards) | Chat Assistant ──
+_tab_dashboard, _tab_chat = st.tabs(["📊 Dashboard", "💬 Chat Assistant"])
 
-    st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
+# ═════════════════════════════════════════════
+# TAB 1: Dashboard — three cards side-by-side
+# ═════════════════════════════════════════════
+with _tab_dashboard:
+    _col1, _col2, _col3 = st.columns([1, 1, 1], gap="small")
+    with _col1:
+        st.markdown(get_next_match_html(), unsafe_allow_html=True)
+    with _col2:
+        groups = get_standings_groups()
+        if "selected_group" not in st.session_state:
+            st.session_state.selected_group = groups[0] if groups else "A"
+        if st.session_state.selected_group not in groups:
+            st.session_state.selected_group = groups[0] if groups else "A"
+        st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
+        if groups:
+            def _on_group_change():
+                st.session_state.selected_group = st.session_state.group_dropdown_dk  # type: ignore[attr-defined]
+            st.selectbox("Group", options=groups,
+                         index=groups.index(st.session_state.selected_group),
+                         key="group_dropdown_dk", label_visibility="collapsed",
+                         on_change=_on_group_change)
+    with _col3:
+        from src.server.worldcup_style import get_top_scorers_html, get_top_scorer_metrics
+        if "selected_metric" not in st.session_state:
+            st.session_state.selected_metric = "goals"
+        metrics = get_top_scorer_metrics()
+        if st.session_state.selected_metric not in metrics:
+            st.session_state.selected_metric = "goals"
+        st.markdown(get_top_scorers_html(st.session_state.selected_metric), unsafe_allow_html=True)
+        if metrics:
+            def _on_metric_change():
+                st.session_state.selected_metric = st.session_state.metric_dropdown_dk  # type: ignore[attr-defined]
+            st.selectbox("Metric", options=metrics,
+                         index=metrics.index(st.session_state.selected_metric),
+                         key="metric_dropdown_dk", label_visibility="collapsed",
+                         on_change=_on_metric_change)
+    if _etl_bootstrap_error:
+        st.warning(f"Startup ETL failed. Details: {_etl_bootstrap_error}")
 
-    # Dropdown group picker — uses on_change callback, no st.rerun()
-    if groups:
-        def _on_group_change():
-            st.session_state.selected_group = st.session_state.group_dropdown_key  # type: ignore[attr-defined]
-        st.selectbox(
-            "Group",
-            options=groups,
-            index=groups.index(st.session_state.selected_group),
-            key="group_dropdown_key",
-            label_visibility="collapsed",
-            on_change=_on_group_change,
-        )
-with _col3:
-    from src.server.worldcup_style import get_top_scorers_html, get_top_scorer_metrics
+# ═════════════════════════════════════════════
+# TAB 2: Chat Assistant
+# ═════════════════════════════════════════════
+with _tab_chat:
+    # Display chat history
+    for msg in st.session_state.messages:
+        role = msg["role"]
+        content = inject_flag_emojis(msg["content"])
+        content = inject_player_images(content)
+        with st.chat_message(role, avatar="assistant" if role == "assistant" else "👤"):
+            st.markdown(content, unsafe_allow_html=True)
 
-    # Default metric
-    if "selected_metric" not in st.session_state:
-        st.session_state.selected_metric = "goals"
-    metrics = get_top_scorer_metrics()
-    if st.session_state.selected_metric not in metrics:
-        st.session_state.selected_metric = "goals"
-
-    st.markdown(
-        get_top_scorers_html(st.session_state.selected_metric),
-        unsafe_allow_html=True,
-    )
-
-    # Dropdown metric picker — uses on_change callback, no st.rerun()
-    if metrics:
-        current_idx = metrics.index(st.session_state.selected_metric)
-        def _on_metric_change():
-            st.session_state.selected_metric = st.session_state.metric_dropdown_key  # type: ignore[attr-defined]
-        st.selectbox(
-            "Metric",
-            options=metrics,
-            index=current_idx,
-            key="metric_dropdown_key",
-            label_visibility="collapsed",
-            on_change=_on_metric_change,
-        )
-
-if _etl_bootstrap_error:
-    st.warning(
-        "Startup ETL did not run successfully. The app will continue with existing data. "
-        f"Details: {_etl_bootstrap_error}"
-    )
-
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "user_id" not in st.session_state:
-    st.session_state.user_id = "web_user"
-
-
-with st.sidebar:
-    st.markdown("### 🏆 World Cup 2026")
-    st.markdown("*AI-Powered Football Insights*")
-    st.divider()
-    st.subheader("👤 Session")
-    st.session_state.user_id = st.text_input("User ID", value=st.session_state.user_id)
-
-    st.divider()
-    st.subheader("📡 ETL Status")
-    last_etl = _get_last_etl_status()
-    if last_etl is None:
-        st.caption("No ETL status found yet.")
-    else:
-        st.caption(f"Last run at: {last_etl['started_at']}")
-        st.caption(f"Status: {last_etl['status']}")
-        st.caption(f"Trigger: {last_etl['trigger']}")
-        if last_etl["duration_s"] and last_etl["duration_s"] != "nan":
-            st.caption(f"Duration: {last_etl['duration_s']}s")
-        if last_etl["status"].startswith("FAILED") and last_etl["error_message"]:
-            st.caption(f"Error: {last_etl['error_message'][:160]}")
-
-    if st.button("Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
-
-
-for msg in st.session_state.messages:
-    role = msg["role"]
-    content = msg["content"]
-    # Inject flag emojis for national teams
-    content = inject_flag_emojis(content)
-    # Embed player images for known players
-    content = inject_player_images(content)
-    with st.chat_message(role, avatar="assistant" if role == "assistant" else "👤"):
-        st.markdown(content, unsafe_allow_html=True)
-
-
-def _run_orchestrator_sync(user_message: str, user_id: str, conversation_history: list[dict[str, str]] | None = None) -> str:
-    """Executes async orchestrator from Streamlit sync context."""
-    async def _invoke() -> str:
-        try:
-            return await run_orchestrator(
-                user_message=user_message,
-                user_id=user_id,
-                conversation_history=conversation_history,
-            )
-        except TypeError as exc:
-            if "unexpected keyword argument 'conversation_history'" not in str(exc):
-                raise
-            # Backward compatibility for deployments with older orchestrator signature.
-            return await run_orchestrator(
-                user_message=user_message,
-                user_id=user_id,
-            )
-
-    try:
-        return asyncio.run(_invoke())
-    except RuntimeError:
-        # Fallback in case an event loop is already running in this process.
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(_invoke())
-        finally:
-            loop.close()
-
-
-prompt = st.chat_input("Ask about matches, predictions, standings, sentiment...")
-if prompt:
-    # Inject flag emojis into user message before storing
-    display_prompt = inject_flag_emojis(prompt)
-    display_prompt = inject_player_images(display_prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(display_prompt, unsafe_allow_html=True)
-
-    with st.chat_message("assistant", avatar="assistant"):
-        with st.spinner("🏆 Thinking..."):
-            # Send only prior turns as context; current prompt is passed separately.
-            history = st.session_state.messages[:-1]
-            reply = _run_orchestrator_sync(prompt, st.session_state.user_id, history)
-        # Inject flag emojis, player images, and confidence stars into assistant reply
-        styled_reply = inject_flag_emojis(reply)
-        styled_reply = inject_player_images(styled_reply)
-        st.markdown(styled_reply, unsafe_allow_html=True)
-
-    st.session_state.messages.append({"role": "assistant", "content": reply})
+    prompt = st.chat_input("Ask about matches, predictions, standings, sentiment...")
+    if prompt:
+        display_prompt = inject_player_images(inject_flag_emojis(prompt))
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(display_prompt, unsafe_allow_html=True)
+        with st.chat_message("assistant", avatar="assistant"):
+            with st.spinner("🏆 Thinking..."):
+                history = st.session_state.messages[:-1]
+                reply = _run_orchestrator_sync(prompt, st.session_state.user_id, history)
+            styled_reply = inject_player_images(inject_flag_emojis(reply))
+            st.markdown(styled_reply, unsafe_allow_html=True)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
