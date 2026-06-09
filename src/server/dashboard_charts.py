@@ -157,9 +157,10 @@ def top_scorers_bar_chart(metric: str = "goals") -> go.Figure | None:
         lambda r: f"{get_flag(r['team_name']) or ''} {r['player_name']}", axis=1
     )
 
-    # Calculate chart height: ~28px per bar, min 400px, max 1200px
+    # Fixed internal height: 28px per bar so all 100 labels are readable,
+    # displayed in a 400px scrollable container in the Streamlit app.
     n_rows = len(df)
-    chart_height = max(400, min(1200, n_rows * 28))
+    chart_height = max(400, n_rows * 28)
 
     fig = px.bar(
         df.sort_values("metric_val", ascending=True),
