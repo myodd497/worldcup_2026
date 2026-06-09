@@ -4,11 +4,11 @@ Orchestrator — single LangGraph pipeline for the football assistant.
 Pipeline (5 nodes):
   plan → execute → verify → compose → END
 
-- `plan`     : one gpt-4o call selects 1-2 specialists + topic + verifier flag
+- `plan`     : one simple-tier LLM call selects 1-2 specialists + topic + verifier flag
 - `execute`  : runs the chosen specialists (sequentially); each returns {answer, confidence, metadata}
-- `verify`   : when warranted (and there's bigquery output), gpt-4o critic scores groundedness
+- `verify`   : when warranted (and there's bigquery output), complex-tier critic scores groundedness
                and can request ONE repair from the bigquery agent with a structured hint
-- `compose`  : gpt-4o-mini formats the final WhatsApp-friendly reply with confidence stars
+- `compose`  : simple-tier LLM formats the final WhatsApp-friendly reply with confidence stars
 
 Conversation context is supplied via `ConversationMemory` (rolling LLM summary
 + structured entity store). The naive "last N raw turns" window is gone.
@@ -23,6 +23,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from src.agents.conversation_memory import ConversationMemory
+from src.agents.llm_config import create_chat_model
 from src.agents.workflow_logger import get_tracker
 
 
@@ -53,7 +54,7 @@ def _chat() -> ChatOpenAI:
     """Cheap chat LLM for the small-talk specialist (chitchat only)."""
     global _chat_llm
     if _chat_llm is None:
-        _chat_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+        _chat_llm = create_chat_model("simple", temperature=0.3)
     return _chat_llm
 
 
