@@ -219,7 +219,8 @@ with _tab_dashboard:
     try:
         from src.server.dashboard_charts import (
             top_scorers_bar_chart, team_attack_defense_scatter,
-            player_comparison_radar, get_available_players,
+            player_comparison_radar, goalkeeper_comparison_radar,
+            get_available_players, get_available_goalkeepers,
         )
         _charts_ok = True
     except ImportError as e:
@@ -307,12 +308,42 @@ with _tab_dashboard:
             else:
                 st.caption("Chart data not available yet.")
 
-        # ── Row 3: Player Comparison Radar ──
+        # ── Row 3: Goalkeeper Radar (left) │ Outfield Player Radar (right) ──
         _c3, _c4 = st.columns([1, 1], gap="small")
         with _c3:
-            pass
+            # ── Goalkeeper comparison ──
+            gk_list = get_available_goalkeepers()
+            if len(gk_list) >= 2:
+                if "gk_radar_p1" not in st.session_state:
+                    st.session_state.gk_radar_p1 = gk_list[0]
+                if "gk_radar_p2" not in st.session_state:
+                    st.session_state.gk_radar_p2 = gk_list[1] if len(gk_list) > 1 else gk_list[0]
+                _gk1, _gk2 = st.columns(2)
+                with _gk1:
+                    if gk_list:
+                        def _on_gk1_change():
+                            st.session_state.gk_radar_p1 = st.session_state.gk_radar_p1_key  # type: ignore[attr-defined]
+                        st.selectbox("GK 1", gk_list,
+                                     index=gk_list.index(st.session_state.gk_radar_p1) if st.session_state.gk_radar_p1 in gk_list else 0,
+                                     key="gk_radar_p1_key", label_visibility="collapsed",
+                                     on_change=_on_gk1_change)
+                with _gk2:
+                    if gk_list:
+                        def _on_gk2_change():
+                            st.session_state.gk_radar_p2 = st.session_state.gk_radar_p2_key  # type: ignore[attr-defined]
+                        st.selectbox("GK 2", gk_list,
+                                     index=gk_list.index(st.session_state.gk_radar_p2) if st.session_state.gk_radar_p2 in gk_list else min(1, len(gk_list)-1),
+                                     key="gk_radar_p2_key", label_visibility="collapsed",
+                                     on_change=_on_gk2_change)
+                fig3 = goalkeeper_comparison_radar(st.session_state.gk_radar_p1, st.session_state.gk_radar_p2)
+                if fig3:
+                    st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.caption("GK data not available yet.")
+            else:
+                st.caption("Not enough goalkeeper data for comparison.")
         with _c4:
-            # Player comparison
+            # ── Outfield player comparison ──
             players = get_available_players()
             if len(players) >= 2:
                 if "radar_p1" not in st.session_state:

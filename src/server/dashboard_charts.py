@@ -469,13 +469,14 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
     project, dataset = creds
 
     if not player1 or not player2:
-        # Default: top 2 scorers
+        # Default: top 2 outfield scorers
         sql_default = f"""
             SELECT dp.player_name
             FROM `{project}.{dataset}.fact_player_match_stat` fps
             JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
             WHERE 1=1
               {_wc_where_clause()}
+              AND dp.is_goalkeeper = FALSE
             GROUP BY dp.player_name
             ORDER BY SUM(fps.goals) DESC
             LIMIT 2
@@ -508,6 +509,7 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
         JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
         WHERE 1=1
           {_wc_where_clause()}
+          AND dp.is_goalkeeper = FALSE
           AND (LOWER(dp.player_name) = LOWER('{safe1}')
                OR LOWER(dp.player_name) = LOWER('{safe2}'))
         GROUP BY dp.player_name
@@ -581,6 +583,138 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
     return fig
 
 
+# ---------------------------------------------------------------------------
+# 5. Goalkeeper Comparison Radar Chart
+# ---------------------------------------------------------------------------
+
+def goalkeeper_comparison_radar(gk1: str = "", gk2: str = "") -> go.Figure | None:
+    """Returns a radar chart comparing two goalkeepers on GK-specific metrics."""
+    creds = _get_project_dataset()
+    if not creds:
+        return None
+    project, dataset = creds
+
+    if not gk1 or not gk2:
+        # Default: top 2 GKs by saves
+        sql_default = f"""
+            SELECT dp.player_name
+            FROM `{project}.{dataset}.fact_player_match_stat` fps
+            JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+            WHERE 1=1
+              {_wc_where_clause()}
+              AND dp.is_goalkeeper = TRUE
+            GROUP BY dp.player_name
+            ORDER BY SUM(fps.saves) DESC
+            LIMIT 2
+        """
+        try:
+            default_df = _run_bq(sql_default)
+            if not default_df.empty:
+                names = default_df["player_name"].tolist()
+                gk1 = names[0] if len(names) > 0 else ""
+                gk2 = names[1] if len(names) > 1 else ""
+        except Exception:
+            return None
+
+    if not gk1 or not gk2:
+        return None
+
+    safe1 = gk1.replace("'", "''")
+    safe2 = gk2.replace("'", "''")
+
+    sql = f"""
+        SELECT
+            dp.player_name,
+            SUM(fps.saves) AS saves,
+            SAFE_DIVIDE(SUM(fps.saves), SUM(fps.goals_conceded) + SUM(fps.saves)) * 100 AS save_pct,
+            SUM(fps.goals_conceded) AS goals_conceded,
+            SAFE_DIVIDE(SUM(fps.goals_conceded), COUNT(*)) AS conceded_per_game,
+            AVG(fps.rating) AS rating,
+            SUM(fps.passes_accurate) AS passes_accurate
+        FROM `{project}.{dataset}.fact_player_match_stat` fps
+        JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+        WHERE 1=1
+          {_wc_where_clause()}
+          AND dp.is_goalkeeper = TRUE
+          AND (LOWER(dp.player_name) = LOWER('{safe1}')
+               OR LOWER(dp.player_name) = LOWER('{safe2}'))
+        GROUP BY dp.player_name
+        ORDER BY dp.player_name
+    """
+    try:
+        df = _run_bq(sql)
+    except Exception:
+        return None
+    if df.empty or len(df) < 2:
+        return None
+
+    # Invert conceded_per_game so lower = better on radar
+    max_conceded = df["conceded_per_game"].max() or 1
+    df["conceded_per_game_inv"] = df["conceded_per_game"].apply(
+        lambda x: max_conceded - x
+    )
+
+    dimensions = ["saves", "save_pct", "conceded_per_game_inv", "rating", "passes_accurate"]
+    labels = ["Saves", "Save %", "GA/game ↓", "Rating (x10)", "Passes Acc"]
+
+    # Normalize values to 0-100 scale
+    max_vals = {}
+    for dim in dimensions:
+        max_vals[dim] = max(df[dim].max(), 0.01)
+
+    fig = go.Figure()
+    colors = [_GOLD, _ACCENT_BLUE]
+    hl_colors_rgba = ["rgba(240,192,64,0.35)", "rgba(30,144,255,0.35)"]
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        values = []
+        for dim in dimensions:
+            val = row[dim] or 0
+            if dim == "rating":
+                val = val * 10  # scale 0-10 to 0-100
+            values.append(min(val / max_vals[dim] * 100, 100))
+
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=labels,
+            fill="toself",
+            name=row["player_name"],
+            fillcolor=hl_colors_rgba[i],
+            line=dict(color=colors[i], width=2),
+            marker=dict(size=4),
+        ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(10,31,46,0.6)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#ccc",
+        title=dict(text=f"🧤 {gk1} vs {gk2}", font_color="#f0c040"),
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(
+                visible=True,
+                range=[0, 105],
+                showticklabels=False,
+                gridcolor="rgba(255,255,255,0.08)",
+            ),
+            angularaxis=dict(
+                gridcolor="rgba(255,255,255,0.08)",
+            ),
+        ),
+        height=340,
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.12,
+            xanchor="center",
+            x=0.5,
+        ),
+    )
+    return fig
+
+
 def get_available_players() -> list[str]:
     """Return ALL players in the dataset for dropdown selection."""
     creds = _get_project_dataset()
@@ -591,6 +725,26 @@ def get_available_players() -> list[str]:
         SELECT DISTINCT dp.player_name
         FROM `{project}.{dataset}.fact_player_match_stat` fps
         JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+        ORDER BY dp.player_name
+    """
+    try:
+        df = _run_bq(sql)
+        return df["player_name"].tolist() if not df.empty else []
+    except Exception:
+        return []
+
+
+def get_available_goalkeepers() -> list[str]:
+    """Return ALL goalkeepers in the dataset for dropdown selection."""
+    creds = _get_project_dataset()
+    if not creds:
+        return []
+    project, dataset = creds
+    sql = f"""
+        SELECT DISTINCT dp.player_name
+        FROM `{project}.{dataset}.fact_player_match_stat` fps
+        JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+        WHERE dp.is_goalkeeper = TRUE
         ORDER BY dp.player_name
     """
     try:
