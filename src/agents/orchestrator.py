@@ -220,10 +220,14 @@ def verify_node(state: OrchestratorState) -> OrchestratorState:
     verdict_dict: dict[str, Any] = {}
 
     # Only verify BigQuery answers — that's where nonsense slips through.
-    if state.get("needs_verifier") and primary_name == "bigquery":
+    import os as _os
+    _verifier_off = _os.getenv("DISABLE_VERIFIER", "").lower() in ("1", "true", "yes")
+    if not _verifier_off and state.get("needs_verifier") and primary_name == "bigquery":
         from src.agents.verifier_agent import verify
+        import time as _time
 
         meta = primary_payload.get("metadata") or {}
+        _t0 = _time.perf_counter()
         verdict = verify(
             question=state["user_message"],
             answer=str(primary_payload.get("answer", "")),
@@ -231,8 +235,9 @@ def verify_node(state: OrchestratorState) -> OrchestratorState:
             row_samples=list(meta.get("row_samples") or []),
         )
         verdict_dict = verdict.to_dict()
+        verdict_dict["_verify_sec"] = round(_time.perf_counter() - _t0, 2)
 
-        if verdict.needs_repair and verdict.repair_hint:
+        if verdict.needs_repair and verdict.repair_hint and _os.getenv("DISABLE_REPAIR", "").lower() not in ("1", "true", "yes"):
             # ONE repair attempt — feed prior SQL + verifier hint to the BigQuery agent so it
             # has full context of what was tried (instead of starting from scratch).
             from src.agents.bigquery_agent import run_structured as run_bq
@@ -281,7 +286,7 @@ def verify_node(state: OrchestratorState) -> OrchestratorState:
             is_ranking_question,
             run_self_consistency_check,
         )
-        if verdict.grounded and verdict.answers_question and is_ranking_question(state["user_message"]):
+        if verdict.grounded and verdict.answers_question and is_ranking_question(state["user_message"]) and _os.getenv("DISABLE_SELF_CONSISTENCY", "").lower() not in ("1", "true", "yes"):
             sc = run_self_consistency_check(
                 question=state["user_message"],
                 primary_answer=str(primary_payload.get("answer", "")),
