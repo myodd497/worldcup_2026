@@ -137,18 +137,18 @@ with _col2:
 
     st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
 
-    # Dropdown group picker
+    # Dropdown group picker — uses on_change callback, no st.rerun()
     if groups:
+        def _on_group_change():
+            st.session_state.selected_group = st.session_state.group_dropdown_key  # type: ignore[attr-defined]
         st.selectbox(
             "Group",
             options=groups,
             index=groups.index(st.session_state.selected_group),
-            key="group_dropdown",
+            key="group_dropdown_key",
             label_visibility="collapsed",
+            on_change=_on_group_change,
         )
-        if st.session_state.group_dropdown != st.session_state.selected_group:
-            st.session_state.selected_group = st.session_state.group_dropdown
-            st.rerun()
 with _col3:
     from src.server.worldcup_style import get_top_scorers_html, get_top_scorer_metrics
 
@@ -164,19 +164,19 @@ with _col3:
         unsafe_allow_html=True,
     )
 
-    # Dropdown metric picker
+    # Dropdown metric picker — uses on_change callback, no st.rerun()
     if metrics:
         current_idx = metrics.index(st.session_state.selected_metric)
+        def _on_metric_change():
+            st.session_state.selected_metric = st.session_state.metric_dropdown_key  # type: ignore[attr-defined]
         st.selectbox(
             "Metric",
             options=metrics,
             index=current_idx,
-            key="metric_dropdown",
+            key="metric_dropdown_key",
             label_visibility="collapsed",
+            on_change=_on_metric_change,
         )
-        if st.session_state.metric_dropdown != st.session_state.selected_metric:
-            st.session_state.selected_metric = st.session_state.metric_dropdown
-            st.rerun()
 
 # ── Title area: trophy logo + title + subtitle, all centered ──
 st.markdown(
