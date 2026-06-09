@@ -123,8 +123,8 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
-# ── Match & Standings cards side-by-side (above the title on main page) ──
-_col1, _col2 = st.columns([1, 1])
+# ── Match & Standings cards side-by-side (above the title on main page, wider) ──
+_col1, _col2 = st.columns([1, 1], gap="small")
 with _col1:
     st.markdown(get_next_match_html(), unsafe_allow_html=True)
 with _col2:
@@ -138,6 +138,11 @@ with _col2:
     # Group selector buttons
     groups = get_standings_groups()
     if groups:
+        st.markdown(
+            '<div style="text-align:center;font-size:0.55em;color:#888;'
+            'text-transform:uppercase;letter-spacing:0.15em;margin-top:6px;">Group</div>',
+            unsafe_allow_html=True,
+        )
         _cols = st.columns(len(groups))
         for i, g in enumerate(groups):
             with _cols[i]:

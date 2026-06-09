@@ -465,6 +465,16 @@ def _build_world_cup_css() -> str:
 [data-testid="stAppViewBlockContainer"] {{
     position: relative;
     z-index: 1;
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
+    max-width: 100% !important;
+}}
+
+/* ── Widen the main block container to use more screen width ── */
+[data-testid="stMainBlockContainer"] {{
+    max-width: 100% !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
 }}
 
 /* ── Chat message styling ── */
@@ -539,14 +549,14 @@ h1 {{
     text-transform: uppercase;
 }}
 
-/* ── Next Match card (centered, compact vertical layout) ── */
+/* ── Next Match card (centered, compact vertical layout, wider) ── */
 .next-match-card {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 14px 16px;
+    padding: 18px 20px;
     margin: 4px auto 16px auto;
-    max-width: 360px;
+    max-width: 100%;
     text-align: center;
 }}
 .next-match-round {{
@@ -612,12 +622,16 @@ h1 {{
     padding: 1px 0;
 }}
 
-/* ── Standings card (side-by-side with next match) ── */
+/* ── Standings card (side-by-side with next match, wider) ── */
 .standings-card {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 14px 16px;
+    padding: 18px 20px;
+    max-width: 100%;
+    text-align: center;
+    overflow-x: auto;
+}}
     max-width: 420px;
     text-align: center;
     overflow-x: auto;
