@@ -557,8 +557,8 @@ h1 {{
     padding: 14px 16px;
     max-width: 100%;
     text-align: center;
-    height: 294px;
-    min-height: 294px;
+    height: 180px;
+    min-height: 180px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
@@ -638,8 +638,8 @@ h1 {{
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 294px;
-    min-height: 294px;
+    height: 180px;
+    min-height: 180px;
     box-sizing: border-box;
 }}
 .standings-header {{
@@ -706,8 +706,8 @@ h1 {{
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 294px;
-    min-height: 294px;
+    height: 180px;
+    min-height: 180px;
     box-sizing: border-box;
 }}
 .topscorers-table {{
