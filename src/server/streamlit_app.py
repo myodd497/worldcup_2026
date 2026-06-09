@@ -198,7 +198,6 @@ with _tab_dashboard:
             'text-transform:uppercase; letter-spacing:1px;">📊 Standings</span>',
             unsafe_allow_html=True,
         )
-        st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
         if groups:
             def _on_group_change():
                 st.session_state.selected_group = st.session_state.group_dropdown_dk  # type: ignore[attr-defined]
@@ -206,6 +205,7 @@ with _tab_dashboard:
                          index=groups.index(st.session_state.selected_group),
                          key="group_dropdown_dk", label_visibility="collapsed",
                          on_change=_on_group_change)
+        st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
     with _col3:
         from src.server.worldcup_style import get_top_scorers_html
         st.markdown(
