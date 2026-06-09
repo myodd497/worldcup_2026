@@ -69,7 +69,7 @@ def _startup_etl_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def _get_wc_team_names() -> list[str]:
     """Return sorted list of WC2026 participant team names for dropdowns."""
     project = os.environ.get("BIGQUERY_PROJECT_ID")
@@ -89,7 +89,7 @@ def _get_wc_team_names() -> list[str]:
         return []
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def _get_last_etl_status() -> dict[str, str] | None:
     """Returns latest ETL run metadata from BigQuery status table."""
     project = os.environ.get("BIGQUERY_PROJECT_ID")
@@ -144,6 +144,72 @@ def _run_orchestrator_sync(
     return asyncio.run(run_orchestrator(user_message, user_id, conversation_history))
 
 
+# ── Cached wrappers for dashboard BigQuery/Plotly helpers ─────────────────
+# Every Streamlit rerun re-executes the dashboard tab body, so without these
+# caches each chat submit triggers ~10 BigQuery round-trips + chart rebuilds.
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_next_match_html() -> str:
+    return get_next_match_html()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_standings_groups() -> list[str]:
+    return get_standings_groups()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_standings_html(group_name: str) -> str:
+    return get_standings_html(group_name)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_top_scorers_html(metric: str = "goals") -> str:
+    from src.server.worldcup_style import get_top_scorers_html
+    return get_top_scorers_html(metric)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_top_scorer_metrics() -> list[str]:
+    from src.server.worldcup_style import get_top_scorer_metrics
+    return get_top_scorer_metrics()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_top_scorers_bar(metric: str):
+    from src.server.dashboard_charts import top_scorers_bar_chart
+    return top_scorers_bar_chart(metric)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_attack_defense_scatter(hl1: str, hl2: str):
+    from src.server.dashboard_charts import team_attack_defense_scatter
+    return team_attack_defense_scatter(hl1, hl2)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_player_radar(p1: str, p2: str):
+    from src.server.dashboard_charts import player_comparison_radar
+    return player_comparison_radar(p1, p2)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_goalkeeper_radar(p1: str, p2: str):
+    from src.server.dashboard_charts import goalkeeper_comparison_radar
+    return goalkeeper_comparison_radar(p1, p2)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_available_players() -> list[str]:
+    from src.server.dashboard_charts import get_available_players
+    return get_available_players()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_available_goalkeepers() -> list[str]:
+    from src.server.dashboard_charts import get_available_goalkeepers
+    return get_available_goalkeepers()
+
+
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -186,9 +252,9 @@ with _tab_dashboard:
             'text-transform:uppercase; letter-spacing:1px;">⚽ Next Match</span>',
             unsafe_allow_html=True,
         )
-        st.markdown(get_next_match_html(), unsafe_allow_html=True)
+        st.markdown(_cached_next_match_html(), unsafe_allow_html=True)
     with _col2:
-        groups = get_standings_groups()
+        groups = _cached_standings_groups()
         if "selected_group" not in st.session_state:
             st.session_state.selected_group = groups[0] if groups else "A"
         if st.session_state.selected_group not in groups:
@@ -198,7 +264,7 @@ with _tab_dashboard:
             'text-transform:uppercase; letter-spacing:1px;">📊 Standings</span>',
             unsafe_allow_html=True,
         )
-        st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
+        st.markdown(_cached_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
         if groups:
             def _on_group_change():
                 st.session_state.selected_group = st.session_state.group_dropdown_dk  # type: ignore[attr-defined]
@@ -207,13 +273,12 @@ with _tab_dashboard:
                          key="group_dropdown_dk", label_visibility="collapsed",
                          on_change=_on_group_change)
     with _col3:
-        from src.server.worldcup_style import get_top_scorers_html
         st.markdown(
             '<span style="color:#f0c040; font-weight:700; font-size:13px; '
             'text-transform:uppercase; letter-spacing:1px;">🥇 Golden Boot</span>',
             unsafe_allow_html=True,
         )
-        st.markdown(get_top_scorers_html(), unsafe_allow_html=True)
+        st.markdown(_cached_top_scorers_html(), unsafe_allow_html=True)
 
     # ── Row 2: Top Scorers Bar Chart │ Attack vs Defense Scatter ──
     try:
@@ -231,8 +296,7 @@ with _tab_dashboard:
         _c1, _c2 = st.columns([1, 1], gap="small")
         with _c1:
             # Independent metric selector for the Top Players chart
-            from src.server.worldcup_style import get_top_scorer_metrics as _get_chart_metrics
-            chart_metrics = _get_chart_metrics()
+            chart_metrics = _cached_top_scorer_metrics()
             if "chart_metric" not in st.session_state:
                 st.session_state.chart_metric = "goals"
             if st.session_state.chart_metric not in chart_metrics:
@@ -246,7 +310,7 @@ with _tab_dashboard:
                 label_visibility="collapsed",
             )
 
-            fig1 = top_scorers_bar_chart(st.session_state.chart_metric)
+            fig1 = _cached_top_scorers_bar(st.session_state.chart_metric)
             if fig1:
                 with st.container(height=400):
                     st.plotly_chart(
@@ -295,7 +359,7 @@ with _tab_dashboard:
 
             hl1 = "" if st.session_state.scatter_team1 == "All" else st.session_state.scatter_team1
             hl2 = "" if st.session_state.scatter_team2 == "All" else st.session_state.scatter_team2
-            fig2 = team_attack_defense_scatter(hl1, hl2)
+            fig2 = _cached_attack_defense_scatter(hl1, hl2)
             if fig2:
                 with st.container(height=400):
                     st.plotly_chart(
@@ -312,7 +376,7 @@ with _tab_dashboard:
         _c3, _c4 = st.columns([1, 1], gap="small")
         with _c3:
             # ── Goalkeeper comparison ──
-            gk_list = get_available_goalkeepers()
+            gk_list = _cached_available_goalkeepers()
             if len(gk_list) >= 2:
                 if "gk_radar_p1" not in st.session_state:
                     st.session_state.gk_radar_p1 = gk_list[0]
@@ -335,7 +399,7 @@ with _tab_dashboard:
                                      index=gk_list.index(st.session_state.gk_radar_p2) if st.session_state.gk_radar_p2 in gk_list else min(1, len(gk_list)-1),
                                      key="gk_radar_p2_key", label_visibility="collapsed",
                                      on_change=_on_gk2_change)
-                fig3 = goalkeeper_comparison_radar(st.session_state.gk_radar_p1, st.session_state.gk_radar_p2)
+                fig3 = _cached_goalkeeper_radar(st.session_state.gk_radar_p1, st.session_state.gk_radar_p2)
                 if fig3:
                     st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
                 else:
@@ -344,7 +408,7 @@ with _tab_dashboard:
                 st.caption("Not enough goalkeeper data for comparison.")
         with _c4:
             # ── Outfield player comparison ──
-            players = get_available_players()
+            players = _cached_available_players()
             if len(players) >= 2:
                 if "radar_p1" not in st.session_state:
                     st.session_state.radar_p1 = players[0]
@@ -367,7 +431,7 @@ with _tab_dashboard:
                                      index=players.index(st.session_state.radar_p2) if st.session_state.radar_p2 in players else min(1, len(players)-1),
                                      key="radar_p2_key", label_visibility="collapsed",
                                      on_change=_on_p2_change)
-                fig4 = player_comparison_radar(st.session_state.radar_p1, st.session_state.radar_p2)
+                fig4 = _cached_player_radar(st.session_state.radar_p1, st.session_state.radar_p2)
                 if fig4:
                     st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
                 else:
