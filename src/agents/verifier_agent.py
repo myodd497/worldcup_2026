@@ -16,15 +16,16 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_config import create_chat_model
 
-_MODEL = "gpt-4o"   # critic must be strong; this is THE quality gate
+
 _llm: ChatOpenAI | None = None
 
 
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
+        _llm = create_chat_model("complex", temperature=0, max_retries=6, timeout=60)
     return _llm
 
 
