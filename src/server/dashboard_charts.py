@@ -581,18 +581,15 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
 
 
 def get_available_players() -> list[str]:
-    """Return ALL WC2026 players for dropdown selection (not just top N)."""
+    """Return ALL players in the dataset for dropdown selection."""
     creds = _get_project_dataset()
     if not creds:
         return []
     project, dataset = creds
     sql = f"""
-        SELECT dp.player_name
+        SELECT DISTINCT dp.player_name
         FROM `{project}.{dataset}.fact_player_match_stat` fps
         JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
-        WHERE 1=1
-          {_wc_where_clause()}
-        GROUP BY dp.player_name
         ORDER BY dp.player_name
     """
     try:
