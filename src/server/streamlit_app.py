@@ -172,7 +172,7 @@ st.markdown(
 )
 
 # ── Two tabs: Dashboard (cards) | Chat Assistant ──
-_tab_dashboard, _tab_chat = st.tabs(["📊 Dashboard", "💬 Chat Assistant"])
+_tab_chat, _tab_dashboard = st.tabs(["💬 Chat Assistant", "📊 Dashboard"])
 
 # ═════════════════════════════════════════════
 # TAB 1: Dashboard — cards + charts
@@ -302,7 +302,6 @@ with _tab_dashboard:
                         use_container_width=True,
                         config={
                             "displayModeBar": False,
-                            "scrollZoom": True,
                         },
                     )
             else:
@@ -353,6 +352,18 @@ with _tab_dashboard:
 # ═════════════════════════════════════════════
 with _tab_chat:
     # Display chat history
+    if not st.session_state.messages:
+        st.markdown(
+            '<div style="padding:1.5rem 1rem;margin:0.5rem 0 1rem 0;'
+            'background:rgba(30,144,255,0.08);border-left:3px solid #1e90ff;'
+            'border-radius:0 8px 8px 0;font-size:0.9rem;line-height:1.6;">'
+            '<span style="color:#f0c040;font-weight:700;">💡 Try asking:</span><br>'
+            '• <em>"Who are the top scorers so far?"</em><br>'
+            '• <em>"Predict the winner of Group C"</em><br>'
+            '• <em>"Show me the latest news about Portugal"</em>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     for msg in st.session_state.messages:
         role = msg["role"]
         content = inject_flag_emojis(msg["content"])

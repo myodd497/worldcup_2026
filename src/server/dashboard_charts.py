@@ -581,7 +581,7 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
 
 
 def get_available_players() -> list[str]:
-    """Return top 20 WC2026 players for dropdown selection."""
+    """Return ALL WC2026 players for dropdown selection (not just top N)."""
     creds = _get_project_dataset()
     if not creds:
         return []
@@ -593,8 +593,7 @@ def get_available_players() -> list[str]:
         WHERE 1=1
           {_wc_where_clause()}
         GROUP BY dp.player_name
-        ORDER BY SUM(fps.goal_contributions) DESC
-        LIMIT 20
+        ORDER BY dp.player_name
     """
     try:
         df = _run_bq(sql)
