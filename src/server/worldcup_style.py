@@ -554,12 +554,15 @@ h1 {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 18px 20px;
     padding: 18px 16px;
     max-width: 100%;
     text-align: center;
-    height: 100%;
+    height: 420px;
+    min-height: 420px;
     box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }}
 .next-match-round {{
     font-size: 0.65em;
@@ -634,8 +637,8 @@ h1 {{
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 100%;
-    max-height: 420px;
+    height: 420px;
+    min-height: 420px;
     box-sizing: border-box;
 }}
 .standings-header {{
@@ -702,8 +705,8 @@ h1 {{
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 100%;
-    max-height: 420px;
+    height: 420px;
+    min-height: 420px;
     box-sizing: border-box;
 }}
 .topscorers-table {{
@@ -1533,7 +1536,7 @@ _TOP_SCORER_METRICS = {
     "rating": ("Rating", "Rat", "rating"),
     "dribbles total": ("Dribbles", "Drb", "dribbles_total"),
     "dribbles success": ("Drb. Succ", "DrbS", "dribbles_success"),
-    "dribbles success %": ("Drb. Succ%", "Drb%", "perct_of_dribbles_success"),
+    "dribbles success %": ("Drb. Succ%", "Drb%", "SAFE_DIVIDE(dribbles_success, dribbles_total)"),
     "penalty scored": ("Pen. Scored", "PK+", "penalty_scored"),
     "penalty missed": ("Pen. Missed", "PK-", "penalty_missed"),
 }
@@ -1578,6 +1581,9 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
     
     Before June 11, 2026: uses a dummy game (match_id=1528286) for testing.
     On/after June 11, 2026: queries all WC2026 matches.
+    
+    The db_column can be a raw column name or a calculated expression
+    (e.g. 'SAFE_DIVIDE(dribbles_success, dribbles_total)' for dribble success %).
     """
     try:
         from src.tools.bigquery_tools import run_query
@@ -1595,22 +1601,49 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
         else:
             where_clause = "AND fps.competition_id = 1 AND fps.season_year = 2026"
 
-        sql = f"""
-            SELECT
-                dp.player_name,
-                dt.team_name,
-                SUM(fps.{db_column}) AS total_value,
-                COUNT(*) AS matches
-            FROM `{project}.{dataset}.fact_player_match_stat` fps
-            JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
-            JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
-            WHERE 1=1
-              {where_clause}
-              AND fps.{db_column} > 0
-            GROUP BY dp.player_name, dt.team_name
-            ORDER BY total_value DESC
-            LIMIT 10
-        """
+        # Determine whether db_column is a raw column or a calculated expression
+        is_calculated = "(" in db_column  # e.g. SAFE_DIVIDE(x, y)
+
+        if is_calculated:
+            # For calculated metrics, we need a subquery first
+            sql = f"""
+                SELECT
+                    player_name, team_name,
+                    SUM(calc_value) AS total_value,
+                    COUNT(*) AS matches
+                FROM (
+                    SELECT
+                        dp.player_name,
+                        dt.team_name,
+                        {db_column} AS calc_value
+                    FROM `{project}.{dataset}.fact_player_match_stat` fps
+                    JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+                    JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
+                    WHERE 1=1
+                      {where_clause}
+                      AND fps.dribbles_total > 0
+                )
+                GROUP BY player_name, team_name
+                ORDER BY total_value DESC
+                LIMIT 10
+            """
+        else:
+            sql = f"""
+                SELECT
+                    dp.player_name,
+                    dt.team_name,
+                    SUM(fps.{db_column}) AS total_value,
+                    COUNT(*) AS matches
+                FROM `{project}.{dataset}.fact_player_match_stat` fps
+                JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+                JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
+                WHERE 1=1
+                  {where_clause}
+                  AND fps.{db_column} > 0
+                GROUP BY dp.player_name, dt.team_name
+                ORDER BY total_value DESC
+                LIMIT 10
+            """
         df = run_query(sql)
         if df.empty:
             return []
@@ -1629,8 +1662,12 @@ def _build_top_scorers_card(rows: list[dict], metric_label: str, col_header: str
         flag = get_flag(team) or ""
         value = row.get("total_value", 0)
         # Format value nicely
+        is_pct_metric = "pct" in metric_label.lower() or "%" in metric_label.lower() or "dribbles success %" in metric_label.lower()
         if isinstance(value, float):
-            if "rating" in metric_label.lower() or "pct" in metric_label.lower() or "%" in metric_label.lower():
+            if is_pct_metric:
+                # For percentage metrics, multiply by 100 since SAFE_DIVIDE returns a decimal 0-1
+                val_str = f"{value * 100:.1f}%"
+            elif "rating" in metric_label.lower():
                 val_str = f"{value:.2f}"
             else:
                 val_str = f"{value:.1f}" if value != int(value) else str(int(value))
