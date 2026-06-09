@@ -465,16 +465,16 @@ def _build_world_cup_css() -> str:
 [data-testid="stAppViewBlockContainer"] {{
     position: relative;
     z-index: 1;
-    padding-left: 1.5rem !important;
-    padding-right: 1.5rem !important;
+    padding-left: 10% !important;
+    padding-right: 10% !important;
     max-width: 100% !important;
 }}
 
 /* ── Widen the main block container to use more screen width ── */
 [data-testid="stMainBlockContainer"] {{
     max-width: 100% !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+    padding-left: 10% !important;
+    padding-right: 10% !important;
 }}
 
 /* ── Chat message styling ── */
@@ -629,10 +629,6 @@ h1 {{
     border-radius: 14px;
     padding: 18px 20px;
     max-width: 100%;
-    text-align: center;
-    overflow-x: auto;
-}}
-    max-width: 420px;
     text-align: center;
     overflow-x: auto;
 }}
@@ -1428,7 +1424,6 @@ def _build_standings_card(group_name: str, rows: list[dict]) -> str:
         )
 
     return f"""<div class="standings-card">
-    <div class="standings-header">GROUP {group_name.upper()}</div>
     <table class="standings-table">
         <thead>
             <tr>

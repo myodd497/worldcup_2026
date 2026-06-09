@@ -135,23 +135,32 @@ with _col2:
 
     st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
 
-    # Group selector buttons
+    # Group selector with arrow navigation
     groups = get_standings_groups()
     if groups:
-        st.markdown(
-            '<div style="text-align:center;font-size:0.55em;color:#888;'
-            'text-transform:uppercase;letter-spacing:0.15em;margin-top:6px;">Group</div>',
-            unsafe_allow_html=True,
-        )
-        _cols = st.columns(len(groups))
-        for i, g in enumerate(groups):
-            with _cols[i]:
-                if st.button(
-                    g, key=f"grp_{g}",
-                    type="primary" if g == st.session_state.selected_group else "secondary",
-                    use_container_width=True,
-                ):
-                    st.session_state.selected_group = g
+        # Ensure selected group is valid
+        if st.session_state.selected_group not in groups:
+            st.session_state.selected_group = groups[0]
+
+        curr_idx = groups.index(st.session_state.selected_group)
+
+        _la, _grp_label, _ra = st.columns([1, 3, 1])
+        with _la:
+            if curr_idx > 0:
+                if st.button("◀", key="grp_prev", use_container_width=True):
+                    st.session_state.selected_group = groups[curr_idx - 1]
+                    st.rerun()
+        with _grp_label:
+            st.markdown(
+                f'<div style="text-align:center;font-size:0.6em;color:#888;'
+                f'text-transform:uppercase;letter-spacing:0.12em;margin-top:4px;">'
+                f'Group {st.session_state.selected_group}</div>',
+                unsafe_allow_html=True,
+            )
+        with _ra:
+            if curr_idx < len(groups) - 1:
+                if st.button("▶", key="grp_next", use_container_width=True):
+                    st.session_state.selected_group = groups[curr_idx + 1]
                     st.rerun()
 
 # ── Title with trophy icon image ──
