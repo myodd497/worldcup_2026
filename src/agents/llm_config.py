@@ -10,7 +10,8 @@ LLMTier = Literal["simple", "complex"]
 
 
 def _provider() -> str:
-    return os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+    value = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    return value or "deepseek"
 
 
 def _model_for(provider: str, tier: LLMTier, *, tools: bool = False) -> str:
@@ -55,14 +56,19 @@ def create_chat_model(
             raise RuntimeError("DEEPSEEK_API_KEY is required when LLM_PROVIDER=deepseek")
         params["api_key"] = api_key
         params["base_url"] = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-        # DeepSeek V4 supports thinking mode; enable it for the complex tier.
+        # DeepSeek V4 defaults to thinking mode. Enable it explicitly on complex,
+        # and disable it on simple to keep low-stakes replies short.
         if tier == "complex":
-            effort = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
+            effort = os.getenv("DEEPSEEK_REASONING_EFFORT", "medium")
             params["extra_body"] = {
                 "thinking": {"type": "enabled"},
                 "reasoning_effort": effort,
             }
+        else:
+            params["extra_body"] = {"thinking": {"type": "disabled"}}
     elif provider != "openai":
-        raise ValueError("LLM_PROVIDER must be either 'deepseek' or 'openai'")
+        raise ValueError(
+            f"LLM_PROVIDER must be either 'deepseek' or 'openai' (got {provider!r})"
+        )
 
     return ChatOpenAI(**params)
