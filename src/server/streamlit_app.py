@@ -69,6 +69,26 @@ def _startup_etl_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+@st.cache_data(ttl=600)
+def _get_wc_team_names() -> list[str]:
+    """Return sorted list of WC2026 participant team names for dropdowns."""
+    project = os.environ.get("BIGQUERY_PROJECT_ID")
+    dataset = os.environ.get("BIGQUERY_DATASET_ID")
+    if not project or not dataset:
+        return []
+    sql = f"""
+        SELECT team_name
+        FROM `{project}.{dataset}.dim_team`
+        WHERE is_wc2026_participant = TRUE
+        ORDER BY team_name
+    """
+    try:
+        df = run_query(sql)
+        return df["team_name"].tolist() if not df.empty else []
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=60)
 def _get_last_etl_status() -> dict[str, str] | None:
     """Returns latest ETL run metadata from BigQuery status table."""
@@ -238,9 +258,53 @@ with _tab_dashboard:
             else:
                 st.caption("Chart data not available yet.")
         with _c2:
-            fig2 = team_attack_defense_scatter()
+            # ── Team selectors for the Attack vs Defense chart ──
+            team_list = _get_wc_team_names()
+            # Both dropdowns default to "All" (no highlight)
+            if "scatter_team1" not in st.session_state:
+                st.session_state.scatter_team1 = "All"
+            if "scatter_team2" not in st.session_state:
+                st.session_state.scatter_team2 = "All"
+
+            tsel1, tsel2 = st.columns(2)
+            with tsel1:
+                def _on_t1_change():
+                    st.session_state.scatter_team1 = st.session_state.scatter_team1_key  # type: ignore[attr-defined]
+                st.selectbox(
+                    "Team 1", ["All"] + team_list,
+                    index=0 if st.session_state.scatter_team1 == "All"
+                    else (["All"] + team_list).index(st.session_state.scatter_team1)
+                    if st.session_state.scatter_team1 in team_list else 0,
+                    key="scatter_team1_key",
+                    label_visibility="collapsed",
+                    on_change=_on_t1_change,
+                )
+            with tsel2:
+                def _on_t2_change():
+                    st.session_state.scatter_team2 = st.session_state.scatter_team2_key  # type: ignore[attr-defined]
+                st.selectbox(
+                    "Team 2", ["All"] + team_list,
+                    index=0 if st.session_state.scatter_team2 == "All"
+                    else (["All"] + team_list).index(st.session_state.scatter_team2)
+                    if st.session_state.scatter_team2 in team_list else 0,
+                    key="scatter_team2_key",
+                    label_visibility="collapsed",
+                    on_change=_on_t2_change,
+                )
+
+            hl1 = "" if st.session_state.scatter_team1 == "All" else st.session_state.scatter_team1
+            hl2 = "" if st.session_state.scatter_team2 == "All" else st.session_state.scatter_team2
+            fig2 = team_attack_defense_scatter(hl1, hl2)
             if fig2:
-                st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+                with st.container(height=400):
+                    st.plotly_chart(
+                        fig2,
+                        use_container_width=True,
+                        config={
+                            "displayModeBar": False,
+                            "scrollZoom": True,
+                        },
+                    )
             else:
                 st.caption("Chart data not available yet.")
 

@@ -200,8 +200,16 @@ def top_scorers_bar_chart(metric: str = "goals") -> go.Figure | None:
 # 2. Team Attack vs Defense Scatter Plot
 # ---------------------------------------------------------------------------
 
-def team_attack_defense_scatter() -> go.Figure | None:
-    """Returns a scatter plot: goals scored vs conceded per WC2026 team."""
+def team_attack_defense_scatter(
+    highlight_team1: str = "",
+    highlight_team2: str = "",
+) -> go.Figure | None:
+    """Returns a scatter plot: goals scored vs conceded per WC2026 team.
+
+    Args:
+        highlight_team1: If provided, this team is highlighted with a distinct marker.
+        highlight_team2: If provided, this team is also highlighted.
+    """
     creds = _get_project_dataset()
     if not creds:
         return None
@@ -235,6 +243,11 @@ def team_attack_defense_scatter() -> go.Figure | None:
     df["goals_per_game"] = df["goals_scored"] / df["matches"]
     df["conceded_per_game"] = df["goals_conceded"] / df["matches"]
 
+    # Normalize highlight names (case-insensitive, strip)
+    hl1 = highlight_team1.strip().lower() if highlight_team1 else ""
+    hl2 = highlight_team2.strip().lower() if highlight_team2 else ""
+    highlight_names = {n for n in (hl1, hl2) if n}
+
     # Compute overall averages for quadrant lines
     avg_gf = df["goals_per_game"].mean()
     avg_ga = df["conceded_per_game"].mean()
@@ -256,27 +269,84 @@ def team_attack_defense_scatter() -> go.Figure | None:
     fig.add_vline(x=avg_gf, line_dash="dash", line_color="rgba(255,255,255,0.15)",
                   annotation_text=f"Avg GF: {avg_gf:.1f}", annotation_position="top right")
 
-    fig.add_trace(go.Scatter(
-        x=df["goals_per_game"], y=df["conceded_per_game"],
-        mode="markers+text",
-        text=df["flag"],
-        textposition="middle center",
-        textfont_size=16,
-        marker=dict(
-            size=df["matches"] * 6 + 20,
-            color=df["goals_per_game"],
-            colorscale=["#1e90ff", "#f0c040"],
-            showscale=False,
-            line=dict(width=1, color="rgba(255,255,255,0.15)"),
-        ),
-        hovertemplate=(
-            "%{customdata[0]}<br>"
-            "GF/game: <b>%{x:.1f}</b><br>"
-            "GA/game: <b>%{y:.1f}</b><br>"
-            "Matches: <b>%{customdata[1]}</b><extra></extra>"
-        ),
-        customdata=df[["team_name", "matches"]],
-    ))
+    # ── Split data into highlighted and non-highlighted ──
+    df["_is_hl"] = df["team_name"].str.lower().apply(
+        lambda n: n in highlight_names
+    )
+
+    df_other = df[~df["_is_hl"]]
+    df_highlight = df[df["_is_hl"]]
+
+    # Non-highlighted teams
+    if not df_other.empty:
+        fig.add_trace(go.Scatter(
+            x=df_other["goals_per_game"], y=df_other["conceded_per_game"],
+            mode="markers+text",
+            text=df_other["flag"],
+            textposition="middle center",
+            textfont_size=16,
+            marker=dict(
+                size=df_other["matches"] * 6 + 20,
+                color="rgba(100,100,100,0.35)",
+                line=dict(width=1, color="rgba(255,255,255,0.10)"),
+            ),
+            hovertemplate=(
+                "%{customdata[0]}<br>"
+                "GF/game: <b>%{x:.1f}</b><br>"
+                "GA/game: <b>%{y:.1f}</b><br>"
+                "Matches: <b>%{customdata[1]}</b><extra></extra>"
+            ),
+            customdata=df_other[["team_name", "matches"]],
+            showlegend=False,
+        ))
+
+    # Highlighted teams
+    hl_colors = [_GOLD, _ACCENT_BLUE]
+    for i, (_, row) in enumerate(df_highlight.iterrows()):
+        fig.add_trace(go.Scatter(
+            x=[row["goals_per_game"]], y=[row["conceded_per_game"]],
+            mode="markers+text",
+            text=row["flag"],
+            textposition="middle center",
+            textfont_size=18,
+            name=row["team_name"],
+            marker=dict(
+                size=row["matches"] * 8 + 28,
+                color=hl_colors[i % len(hl_colors)],
+                line=dict(width=2, color="rgba(255,255,255,0.4)"),
+            ),
+            hovertemplate=(
+                f"{row['team_name']}<br>"
+                "GF/game: <b>%{x:.1f}</b><br>"
+                "GA/game: <b>%{y:.1f}</b><br>"
+                f"Matches: <b>{int(row['matches'])}</b><extra></extra>"
+            ),
+        ))
+
+    # If no highlights, show all teams in full color
+    if df_highlight.empty:
+        fig.add_trace(go.Scatter(
+            x=df["goals_per_game"], y=df["conceded_per_game"],
+            mode="markers+text",
+            text=df["flag"],
+            textposition="middle center",
+            textfont_size=16,
+            marker=dict(
+                size=df["matches"] * 6 + 20,
+                color=df["goals_per_game"],
+                colorscale=["#1e90ff", "#f0c040"],
+                showscale=False,
+                line=dict(width=1, color="rgba(255,255,255,0.15)"),
+            ),
+            hovertemplate=(
+                "%{customdata[0]}<br>"
+                "GF/game: <b>%{x:.1f}</b><br>"
+                "GA/game: <b>%{y:.1f}</b><br>"
+                "Matches: <b>%{customdata[1]}</b><extra></extra>"
+            ),
+            customdata=df[["team_name", "matches"]],
+            showlegend=False,
+        ))
 
     fig.update_layout(
         template="plotly_dark",
@@ -286,10 +356,18 @@ def team_attack_defense_scatter() -> go.Figure | None:
         title=dict(text="🛡️ Attack vs Defense (per game)", font_color="#f0c040"),
         xaxis_title="Goals Scored / Game",
         yaxis_title="Goals Conceded / Game",
-        height=380,
-        margin=dict(l=10, r=10, t=36, b=10),
+        height=400,
+        margin=dict(l=10, r=10, t=46, b=10),
         xaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
         yaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            font_color="#ccc",
+        ),
     )
     return fig
 
