@@ -554,15 +554,16 @@ h1 {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 18px 16px;
+    padding: 14px 16px;
     max-width: 100%;
     text-align: center;
-    height: 420px;
-    min-height: 420px;
+    height: 294px;
+    min-height: 294px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    overflow-y: auto;
 }}
 .next-match-round {{
     font-size: 0.65em;
@@ -632,13 +633,13 @@ h1 {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 18px 20px;
+    padding: 14px 16px;
     max-width: 100%;
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 420px;
-    min-height: 420px;
+    height: 294px;
+    min-height: 294px;
     box-sizing: border-box;
 }}
 .standings-header {{
@@ -700,13 +701,13 @@ h1 {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
-    padding: 18px 20px;
+    padding: 14px 16px;
     max-width: 100%;
     text-align: center;
     overflow-x: auto;
     overflow-y: auto;
-    height: 420px;
-    min-height: 420px;
+    height: 294px;
+    min-height: 294px;
     box-sizing: border-box;
 }}
 .topscorers-table {{
