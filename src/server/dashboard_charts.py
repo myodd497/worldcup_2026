@@ -530,6 +530,9 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
 
     fig = go.Figure()
     colors = [_GOLD, _ACCENT_BLUE]
+    # Semi-transparent RGBA versions so the player with lower values
+    # is still visible underneath the one on top.
+    hl_colors_rgba = ["rgba(240,192,64,0.35)", "rgba(30,144,255,0.35)"]
 
     for i, (_, row) in enumerate(df.iterrows()):
         values = []
@@ -542,7 +545,7 @@ def player_comparison_radar(player1: str = "", player2: str = "") -> go.Figure |
             theta=labels,
             fill="toself",
             name=row["player_name"],
-            fillcolor=colors[i].replace(")", ",0.25)"),
+            fillcolor=hl_colors_rgba[i],
             line=dict(color=colors[i], width=2),
             marker=dict(size=4),
         ))
