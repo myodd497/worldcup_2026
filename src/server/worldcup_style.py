@@ -468,6 +468,21 @@ def _build_world_cup_css() -> str:
     padding-left: 10% !important;
     padding-right: 10% !important;
     max-width: 100% !important;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}}
+
+/* ── Center the chat input area ── */
+[data-testid="stChatInput"] {{
+    max-width: 700px;
+    margin: 0 auto;
+}}
+
+/* ── Center the chat messages ── */
+[data-testid="stChatMessageContainer"] {{
+    max-width: 700px;
+    margin: 0 auto;
 }}
 
 /* ── Widen the main block container to use more screen width ── */

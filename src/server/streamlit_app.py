@@ -178,15 +178,19 @@ with _col3:
             st.session_state.selected_metric = st.session_state.metric_dropdown
             st.rerun()
 
-# ── Title with trophy icon image ──
+# ── Title area: trophy logo + title + subtitle, all centered ──
 st.markdown(
-    '<div style="display:flex;align-items:center;gap:0;padding:0;margin-top:-10px;">'
+    '<div style="text-align:center;margin-top:8px;">'
+    '<div style="display:flex;align-items:center;justify-content:center;gap:8px;">'
     f'{world_cup_header_html()}'
     '<h1 style="margin:0;padding:0;display:inline;">World Cup 2026 Chat</h1>'
+    '</div>'
+    '<p style="color:#aaa;font-size:0.85em;margin:4px 0 0 0;">'
+    '⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!'
+    '</p>'
     '</div>',
     unsafe_allow_html=True,
 )
-st.caption("⚽ Your AI-powered football assistant — ask about matches, predictions, standings, and more!")
 
 if _etl_bootstrap_error:
     st.warning(
