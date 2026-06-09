@@ -8,6 +8,8 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_config import create_chat_model
+
 
 _llm: ChatOpenAI | None = None
 
@@ -16,7 +18,7 @@ def _get_llm() -> ChatOpenAI:
     """Lazy-initialize the LLM client."""
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        _llm = create_chat_model("simple", temperature=0)
     return _llm
 
 
