@@ -206,7 +206,26 @@ with _tab_dashboard:
     if _charts_ok:
         _c1, _c2 = st.columns([1, 1], gap="small")
         with _c1:
-            fig1 = top_scorers_bar_chart(st.session_state.get("selected_metric", "goals"))
+            # Independent metric selector for the Top Players chart
+            from src.server.worldcup_style import get_top_scorer_metrics as _get_chart_metrics
+            chart_metrics = _get_chart_metrics()
+            if "chart_metric" not in st.session_state:
+                st.session_state.chart_metric = "goals"
+            if st.session_state.chart_metric not in chart_metrics:
+                st.session_state.chart_metric = "goals"
+
+            def _on_chart_metric_change():
+                st.session_state.chart_metric = st.session_state.chart_metric_key  # type: ignore[attr-defined]
+
+            st.selectbox(
+                "Metric",
+                options=chart_metrics,
+                key="chart_metric_key",
+                on_change=_on_chart_metric_change,
+                label_visibility="collapsed",
+            )
+
+            fig1 = top_scorers_bar_chart(st.session_state.chart_metric)
             if fig1:
                 with st.container(height=400):
                     st.plotly_chart(
@@ -214,7 +233,6 @@ with _tab_dashboard:
                         use_container_width=True,
                         config={
                             "displayModeBar": False,
-                            "scrollZoom": True,
                         },
                     )
             else:

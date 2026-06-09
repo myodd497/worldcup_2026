@@ -165,7 +165,7 @@ def top_scorers_bar_chart(metric: str = "goals") -> go.Figure | None:
     fig = px.bar(
         df.sort_values("metric_val", ascending=True),
         x="metric_val", y="label", orientation="h",
-        title=f"⚽ Top Scorers — {metric_label}",
+        title=f"⚽ Top Players — {metric_label}",
         text="metric_val",
         color="metric_val",
         color_continuous_scale=["#1e90ff", "#f0c040"],
