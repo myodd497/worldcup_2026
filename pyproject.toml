@@ -50,9 +50,6 @@ dependencies = [
 
     # --- Sentiment analysis ---
     "vaderSentiment>=3.3",
-    "transformers>=4.45",
-    "torch>=2.4",
-    "torchvision>=0.19",
 
     # --- Config & secrets ---
     "python-dotenv>=1.0",
