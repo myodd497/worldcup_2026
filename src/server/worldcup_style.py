@@ -1164,12 +1164,12 @@ def _build_next_match_card(data: dict) -> str:
 
     round_line = f'<div style="font-size:0.75em;color:#aaa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">{round_label}</div>' if round_label else ""
 
-    return f"""
-<div class="next-match-card">
+    return (
+f"""<div class="next-match-card">
     {round_line}
     <div class="next-match-countdown">{countdown_text}</div>
-    <div class="next-match-countdown-sub">{countdown_sub}</div>
-
+    <div class="next-match-countdown-sub">{countdown_sub}</div>""" +
+f"""
     <div class="next-match-teams">
         <div class="next-match-team">
             <span class="next-match-flag">{home_flag}</span>
@@ -1182,26 +1182,24 @@ def _build_next_match_card(data: dict) -> str:
             <span class="next-match-name">{away_team}</span>
             <div class="next-match-players">{away_players_html}</div>
         </div>
-    </div>
-
+    </div>""" +
+f"""
     <div class="next-match-meta">
         <div class="next-match-meta-row">📅 {match_date_str[:10] if match_date_str else 'TBD'}</div>
         <div class="next-match-meta-row">🏟️ {venue_full}</div>
         <div class="next-match-meta-row">🦓 {referee}</div>
     </div>
-</div>
-"""
+</div>"""
+    )
 
 
 def _no_match_fallback_html() -> str:
     """Fallback when no upcoming match is found."""
-    return """
-<div class="next-match-card">
-    <div style="text-align:center;color:#aaa;padding:16px;">
-        🏟️ No upcoming match found.<br>
-        <small>Check back soon for the full schedule.</small>
-    </div>
-</div>
-"""
-
-    return pattern.sub(_replacement, text)
+    return (
+        '<div class="next-match-card">'
+        '<div style="text-align:center;color:#aaa;padding:16px;">'
+        '🏟️ No upcoming match found.<br>'
+        '<small>Check back soon for the full schedule.</small>'
+        '</div>'
+        '</div>'
+    )
