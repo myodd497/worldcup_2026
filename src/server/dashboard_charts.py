@@ -14,8 +14,16 @@ from datetime import date
 from typing import Any
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+
+# Lazy import plotly — only needed on the dashboard tab
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    _PLOTLY_AVAILABLE = True
+except ImportError:
+    _PLOTLY_AVAILABLE = False
+    px = None  # type: ignore
+    go = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +113,8 @@ def _get_project_dataset() -> tuple[str, str] | None:
 
 def top_scorers_bar_chart() -> go.Figure | None:
     """Returns a horizontal bar chart of top 10 goal scorers."""
+    if not _PLOTLY_AVAILABLE:
+        return None
     creds = _get_project_dataset()
     if not creds:
         return None

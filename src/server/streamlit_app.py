@@ -176,11 +176,17 @@ with _tab_dashboard:
                          on_change=_on_metric_change)
 
     # ── Row 2: Top Scorers Bar Chart │ Attack vs Defense Scatter ──
-    from src.server.dashboard_charts import (
-        top_scorers_bar_chart, team_attack_defense_scatter,
-        group_standings_chart, player_comparison_radar, get_available_players,
-    )
-    _c1, _c2 = st.columns([1, 1], gap="small")
+    try:
+        from src.server.dashboard_charts import (
+            top_scorers_bar_chart, team_attack_defense_scatter,
+            group_standings_chart, player_comparison_radar, get_available_players,
+        )
+        _charts_ok = True
+    except ImportError:
+        _charts_ok = False
+        st.warning("⚠️ Plotly is not installed. Charts unavailable. Add `plotly` to requirements.txt.")
+    if _charts_ok:
+        _c1, _c2 = st.columns([1, 1], gap="small")
     with _c1:
         fig1 = top_scorers_bar_chart()
         if fig1:
