@@ -402,8 +402,8 @@ def _build_world_cup_css() -> str:
 /* ── Trophy image next to the title (white bg removed via mix-blend-mode) ── */
 .wc-title-icon {{
     display: inline-block;
-    width: 3.5em;
-    height: 3.5em;
+    width: 10.5em;
+    height: 10.5em;
     background: url("{bg_uri}");
     background-size: contain;
     background-repeat: no-repeat;
@@ -539,67 +539,70 @@ h1 {{
     text-transform: uppercase;
 }}
 
-/* ── Next Match card (sidebar) ── */
+/* ── Next Match card (main page, horizontal layout) ── */
 .next-match-card {{
-    background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.6) 100%);
-    border: 1px solid rgba(255, 215, 0, 0.2);
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.06) 0%, rgba(10, 31, 46, 0.5) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.15);
     border-radius: 14px;
-    padding: 14px 12px;
-    margin: 8px 0;
+    padding: 16px 20px;
+    margin: 4px 0 16px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    flex-wrap: wrap;
     text-align: center;
 }}
 .next-match-countdown {{
-    font-size: 1.8em;
+    font-size: 1.6em;
     font-weight: 800;
     color: #f0c040;
     line-height: 1.2;
+    white-space: nowrap;
 }}
 .next-match-countdown-sub {{
-    font-size: 0.75em;
+    font-size: 0.7em;
     color: #888;
-    margin-bottom: 10px;
 }}
 .next-match-teams {{
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
-    gap: 8px;
-    margin: 10px 0;
+    gap: 12px;
 }}
 .next-match-team {{
-    flex: 1;
     text-align: center;
+    min-width: 90px;
 }}
 .next-match-flag {{
-    font-size: 1.6em;
+    font-size: 1.5em;
     display: block;
 }}
 .next-match-name {{
-    font-size: 0.85em;
+    font-size: 0.8em;
     font-weight: 700;
     color: #e0e0e0;
     display: block;
     margin-top: 2px;
 }}
 .next-match-players {{
-    margin-top: 4px;
+    margin-top: 3px;
     color: #ccc;
+    font-size: 0.72em;
 }}
 .next-match-vs {{
-    font-size: 0.7em;
+    font-size: 0.65em;
     font-weight: 700;
-    color: rgba(255, 215, 0, 0.5);
+    color: rgba(255, 215, 0, 0.45);
     align-self: center;
-    padding-top: 6px;
 }}
 .next-match-meta {{
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    text-align: left;
-    font-size: 0.75em;
+    text-align: center;
+    font-size: 0.72em;
     color: #aaa;
-    line-height: 1.6;
+    line-height: 1.5;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    padding-left: 20px;
 }}
 .next-match-meta-row {{
     padding: 1px 0;

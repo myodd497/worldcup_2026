@@ -23,14 +23,11 @@ from src.data.startup_etl import run_full_etl_once
 from src.server.worldcup_style import (
     get_world_cup_css,
     world_cup_header_html,
-    countdown_html,
-    BOUNCING_BALL_HTML,
     CROWD_ROAR_HTML,
     confidence_stars_html,
     inject_flag_emojis,
     inject_player_images,
     get_next_match_html,
-    agent_emoji,
 )
 from src.tools.bigquery_tools import run_query
 
@@ -124,6 +121,9 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
+# ── Next Match card (above the title on main page) ──
+st.markdown(get_next_match_html(), unsafe_allow_html=True)
+
 # ── Title with trophy icon image ──
 st.markdown(
     '<div style="display:flex;align-items:center;gap:0;padding:0;margin-top:-10px;">'
@@ -154,10 +154,6 @@ with st.sidebar:
     st.divider()
     st.subheader("👤 Session")
     st.session_state.user_id = st.text_input("User ID", value=st.session_state.user_id)
-
-    st.divider()
-    st.subheader("⚽ Next Match")
-    st.html(get_next_match_html())
 
     st.divider()
     st.subheader("📡 ETL Status")
