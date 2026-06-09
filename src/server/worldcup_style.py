@@ -467,6 +467,7 @@ def _build_world_cup_css() -> str:
     z-index: 1;
     padding-left: 10% !important;
     padding-right: 10% !important;
+    padding-bottom: 8.5rem !important;
     padding-top: 0.2rem !important;
     max-width: 100% !important;
     display: flex;
@@ -476,12 +477,17 @@ def _build_world_cup_css() -> str:
 
 /* ── Center the chat input area (as a card) ── */
 [data-testid="stChatInput"] {{
-    max-width: 700px;
-    margin: 0 auto 16px auto;
+    position: fixed;
+    left: 50%;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: min(700px, calc(100vw - 2rem));
+    margin: 0;
     background: linear-gradient(180deg, rgba(10, 31, 46, 0.4) 0%, rgba(15, 26, 46, 0.3) 100%);
     border: 1px solid rgba(255, 215, 0, 0.1);
     border-radius: 16px;
     padding: 8px 12px;
+    z-index: 999;
 }}
 
 /* ── Chat area card wrapper ── */
@@ -514,6 +520,7 @@ def _build_world_cup_css() -> str:
     max-width: 100% !important;
     padding-left: 10% !important;
     padding-right: 10% !important;
+    padding-bottom: 8.5rem !important;
 }}
 
 /* ── Chat message styling ── */
