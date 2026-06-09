@@ -37,9 +37,9 @@ from src.tools.entity_resolver import resolve_player_tool, resolve_team_tool
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_TURNS = 10
-_MAX_SQL_ATTEMPTS = 10          # hard cap on total run_sql calls per question
-_MAX_SQL_FAILURES = 3           # consecutive failures before forcing the agent to stop repairing
+_MAX_TOOL_TURNS = 12
+_MAX_SQL_ATTEMPTS = 20          # hard cap on total run_sql calls per question
+_MAX_SQL_FAILURES = 5           # consecutive failed run_sql calls before forcing the agent to stop
 
 
 _TOOLS_SCHEMA = [
@@ -240,6 +240,7 @@ def _run_agent(
     ]
     trace: list[dict[str, Any]] = []
     sql_attempts = 0
+    sql_consecutive_failures = 0
 
     for turn in range(_MAX_TOOL_TURNS):
         _t_llm = _time.perf_counter()
@@ -267,14 +268,21 @@ def _run_agent(
                     args = {}
             parsed_calls.append((name, args or {}, call_id))
 
-        # Enforce SQL attempt cap before dispatch.
+        # Enforce SQL attempt caps before dispatch.
         prepared: list[tuple[str, dict, Any, str | None]] = []  # (name, args, call_id, forced_result)
         for name, args, call_id in parsed_calls:
             if name == "run_sql":
                 sql_attempts += 1
                 if sql_attempts > _MAX_SQL_ATTEMPTS:
                     forced = json.dumps({
-                        "error": "Max SQL attempts reached. Stop and answer with what you have.",
+                        "error": f"Max SQL attempts ({_MAX_SQL_ATTEMPTS}) reached. Stop and answer with what you have.",
+                        "row_count": 0,
+                    })
+                    prepared.append((name, args, call_id, forced))
+                    continue
+                if sql_consecutive_failures >= _MAX_SQL_FAILURES:
+                    forced = json.dumps({
+                        "error": f"{_MAX_SQL_FAILURES} consecutive SQL failures. Stop repairing and answer with what you have.",
                         "row_count": 0,
                     })
                     prepared.append((name, args, call_id, forced))
@@ -305,6 +313,11 @@ def _run_agent(
                 continue
             result, tool_sec = results_by_idx[i]
             metrics = _extract_sql_metrics(name, result)
+            if name == "run_sql":
+                if metrics.get("error"):
+                    sql_consecutive_failures += 1
+                else:
+                    sql_consecutive_failures = 0
             trace.append({
                 "turn": turn,
                 "tool": name,
