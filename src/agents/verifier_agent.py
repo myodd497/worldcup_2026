@@ -25,7 +25,11 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        _llm = create_chat_model("complex", temperature=0, max_retries=6, timeout=60)
+        # Verifier emits a tiny JSON verdict. Use simple tier (Flash, no thinking)
+        # to keep latency low; override via VERIFIER_LLM_TIER=complex if needed.
+        import os
+        tier = os.getenv("VERIFIER_LLM_TIER", "simple")
+        _llm = create_chat_model(tier, temperature=0, max_retries=6, timeout=60, max_tokens=400)
     return _llm
 
 
@@ -73,10 +77,10 @@ def verify(
     answer: str,
     sql_executed: list[str],
     row_samples: list[dict],
-    max_row_preview: int = 10,
+    max_row_preview: int = 5,
 ) -> Verdict:
-    rows_preview = json.dumps(row_samples[:max_row_preview], default=str)[:4000]
-    sql_block = "\n---\n".join(sql_executed[-3:])[:3000]
+    rows_preview = json.dumps(row_samples[:max_row_preview], default=str)[:1200]
+    sql_block = "\n---\n".join(sql_executed[-2:])[:1200]
     user_block = (
         f"Question: {question}\n\n"
         f"SQL executed (last calls):\n```sql\n{sql_block}\n```\n\n"
