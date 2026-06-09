@@ -1572,7 +1572,7 @@ def get_top_scorers_html(metric: str = "goals") -> str:
 def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
     """Fetch top 10 players by a given metric from fact_player_match_stat.
     
-    Before June 11, 2026: uses a dummy game (match_id='1528286') for testing.
+    Before June 11, 2026: uses a dummy game (match_id=1528286) for testing.
     On/after June 11, 2026: queries all WC2026 matches.
     """
     try:
@@ -1587,7 +1587,7 @@ def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
 
         if today < wc_start:
             # --dummy game for testing until WC starts
-            where_clause = "AND fps.match_id = '1528286'"
+            where_clause = "AND fps.match_id = 1528286"
         else:
             where_clause = "AND fps.competition_id = 1 AND fps.season_year = 2026"
 
