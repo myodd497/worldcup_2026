@@ -61,6 +61,7 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 
 ## Rules
 - Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
+- Words like "squad", "roster", "lineup", "players", "starting XI" asking WHO is on a team → `bigquery` (player list lives in the warehouse). Route to `rules` ONLY when the question is about the *regulation* itself (e.g. "how many players per squad", "squad submission deadline", "squad size limit").
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
 - Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
@@ -87,9 +88,8 @@ def _fallback_plan(query: str) -> dict[str, Any]:
     q = (query or "").lower()
     if any(t in q for t in ("hello", "hi ", "how are you", "thanks", "thank you")):
         agents = ["chat"]
-    elif any(t in q for t in ("rule", "regulation", "format", "yellow card", "red card",
-                              "penalty", "extra time", "protest", "disciplinary",
-                              "eligibility", "squad", "kit", "doping", "award", "trophy")):
+    elif any(t in q for t in ("rule", "regulation", "format", "protest", "disciplinary",
+                              "eligibility", "doping", "award", "trophy")):
         agents = ["rules"]
     elif any(t in q for t in ("news", "headline", "rumour", "transfer", "injury")):
         agents = ["news"]
