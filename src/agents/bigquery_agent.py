@@ -38,7 +38,8 @@ from src.tools.entity_resolver import resolve_player_tool, resolve_team_tool
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_TURNS = 10
-_MAX_SQL_ATTEMPTS = 3           # initial + 2 repairs
+_MAX_SQL_ATTEMPTS = 10          # hard cap on total run_sql calls per question
+_MAX_SQL_FAILURES = 3           # consecutive failures before forcing the agent to stop repairing
 
 
 _TOOLS_SCHEMA = [
