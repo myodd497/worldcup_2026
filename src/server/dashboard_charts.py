@@ -238,12 +238,15 @@ def team_attack_defense_scatter() -> go.Figure | None:
     avg_gf = df["goals_per_game"].mean()
     avg_ga = df["conceded_per_game"].mean()
 
+    # Axis max: fixed at 7 goals per game (football-relevant scale)
+    AXIS_MAX = 7.0
+
     fig = go.Figure()
 
     # Quadrant backgrounds
-    fig.add_shape(type="rect", x0=avg_gf, x1=999, y0=0, y1=avg_ga,
+    fig.add_shape(type="rect", x0=avg_gf, x1=AXIS_MAX, y0=0, y1=avg_ga,
                   fillcolor="rgba(80,200,120,0.08)", line_width=0, layer="below")
-    fig.add_shape(type="rect", x0=-999, x1=avg_gf, y0=avg_ga, y1=999,
+    fig.add_shape(type="rect", x0=0, x1=avg_gf, y0=avg_ga, y1=AXIS_MAX,
                   fillcolor="rgba(255,100,100,0.06)", line_width=0, layer="below")
 
     # Average lines
@@ -284,8 +287,8 @@ def team_attack_defense_scatter() -> go.Figure | None:
         yaxis_title="Goals Conceded / Game",
         height=380,
         margin=dict(l=10, r=10, t=36, b=10),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)", zeroline=False),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.05)", zeroline=False),
+        xaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
+        yaxis=dict(range=[0, AXIS_MAX], gridcolor="rgba(255,255,255,0.05)", zeroline=False),
     )
     return fig
 
