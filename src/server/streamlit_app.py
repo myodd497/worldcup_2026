@@ -199,7 +199,7 @@ with _tab_dashboard:
     try:
         from src.server.dashboard_charts import (
             top_scorers_bar_chart, team_attack_defense_scatter,
-            group_standings_chart, player_comparison_radar, get_available_players,
+            player_comparison_radar, get_available_players,
         )
         _charts_ok = True
     except ImportError as e:
@@ -244,14 +244,10 @@ with _tab_dashboard:
             else:
                 st.caption("Chart data not available yet.")
 
-        # ── Row 3: Group Standings │ Player Comparison Radar ──
+        # ── Row 3: Player Comparison Radar ──
         _c3, _c4 = st.columns([1, 1], gap="small")
         with _c3:
-            fig3 = group_standings_chart(st.session_state.get("selected_group", "A"))
-            if fig3:
-                st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
-            else:
-                st.caption("Chart data not available yet.")
+            pass
         with _c4:
             # Player comparison
             players = get_available_players()
