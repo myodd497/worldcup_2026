@@ -161,6 +161,11 @@ with _tab_dashboard:
     # ── Row 1: Three data cards ──
     _col1, _col2, _col3 = st.columns([1, 1, 1], gap="small")
     with _col1:
+        st.markdown(
+            '<span style="color:#f0c040; font-weight:700; font-size:13px; '
+            'text-transform:uppercase; letter-spacing:1px;">⚽ Next Match</span>',
+            unsafe_allow_html=True,
+        )
         st.markdown(get_next_match_html(), unsafe_allow_html=True)
     with _col2:
         groups = get_standings_groups()
@@ -168,6 +173,11 @@ with _tab_dashboard:
             st.session_state.selected_group = groups[0] if groups else "A"
         if st.session_state.selected_group not in groups:
             st.session_state.selected_group = groups[0] if groups else "A"
+        st.markdown(
+            '<span style="color:#f0c040; font-weight:700; font-size:13px; '
+            'text-transform:uppercase; letter-spacing:1px;">📊 Standings</span>',
+            unsafe_allow_html=True,
+        )
         st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
         if groups:
             def _on_group_change():
@@ -177,20 +187,13 @@ with _tab_dashboard:
                          key="group_dropdown_dk", label_visibility="collapsed",
                          on_change=_on_group_change)
     with _col3:
-        from src.server.worldcup_style import get_top_scorers_html, get_top_scorer_metrics
-        if "selected_metric" not in st.session_state:
-            st.session_state.selected_metric = "goals"
-        metrics = get_top_scorer_metrics()
-        if st.session_state.selected_metric not in metrics:
-            st.session_state.selected_metric = "goals"
-        st.markdown(get_top_scorers_html(st.session_state.selected_metric), unsafe_allow_html=True)
-        if metrics:
-            def _on_metric_change():
-                st.session_state.selected_metric = st.session_state.metric_dropdown_dk  # type: ignore[attr-defined]
-            st.selectbox("Metric", options=metrics,
-                         index=metrics.index(st.session_state.selected_metric),
-                         key="metric_dropdown_dk", label_visibility="collapsed",
-                         on_change=_on_metric_change)
+        from src.server.worldcup_style import get_top_scorers_html
+        st.markdown(
+            '<span style="color:#f0c040; font-weight:700; font-size:13px; '
+            'text-transform:uppercase; letter-spacing:1px;">🥇 Golden Boot</span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(get_top_scorers_html(), unsafe_allow_html=True)
 
     # ── Row 2: Top Scorers Bar Chart │ Attack vs Defense Scatter ──
     try:
@@ -214,14 +217,11 @@ with _tab_dashboard:
             if st.session_state.chart_metric not in chart_metrics:
                 st.session_state.chart_metric = "goals"
 
-            def _on_chart_metric_change():
-                st.session_state.chart_metric = st.session_state.chart_metric_key  # type: ignore[attr-defined]
-
             st.selectbox(
                 "Metric",
                 options=chart_metrics,
-                key="chart_metric_key",
-                on_change=_on_chart_metric_change,
+                index=chart_metrics.index(st.session_state.chart_metric),
+                key="chart_metric",
                 label_visibility="collapsed",
             )
 
