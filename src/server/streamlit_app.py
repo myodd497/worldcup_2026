@@ -206,9 +206,16 @@ with _tab_dashboard:
     if _charts_ok:
         _c1, _c2 = st.columns([1, 1], gap="small")
         with _c1:
-            fig1 = top_scorers_bar_chart()
+            fig1 = top_scorers_bar_chart(st.session_state.get("selected_metric", "goals"))
             if fig1:
-                st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(
+                    fig1,
+                    use_container_width=True,
+                    config={
+                        "displayModeBar": False,
+                        "scrollZoom": True,
+                    },
+                )
             else:
                 st.caption("Chart data not available yet.")
         with _c2:

@@ -111,8 +111,13 @@ def _get_project_dataset() -> tuple[str, str] | None:
 # 1. Top Scorers Horizontal Bar Chart
 # ---------------------------------------------------------------------------
 
-def top_scorers_bar_chart() -> go.Figure | None:
-    """Returns a horizontal bar chart of top 10 goal scorers."""
+def top_scorers_bar_chart(metric: str = "goals") -> go.Figure | None:
+    """Returns a horizontal bar chart of top 100 players by the selected metric.
+
+    Args:
+        metric: Metric key (e.g. 'goals', 'assists', 'rating', 'key passes', etc.).
+                Must be one of the keys in worldcup_style._TOP_SCORER_METRICS.
+    """
     if not _PLOTLY_AVAILABLE:
         return None
     creds = _get_project_dataset()
@@ -120,17 +125,24 @@ def top_scorers_bar_chart() -> go.Figure | None:
         return None
     project, dataset = creds
 
+    # Resolve metric to db column and label
+    from src.server.worldcup_style import _TOP_SCORER_METRICS
+    metric = metric.lower()
+    if metric not in _TOP_SCORER_METRICS:
+        metric = "goals"
+    metric_label, col_header, db_column = _TOP_SCORER_METRICS[metric]
+
     sql = f"""
-        SELECT dp.player_name, dt.team_name, SUM(fps.goals) AS goals
+        SELECT dp.player_name, dt.team_name, SUM({db_column}) AS metric_val
         FROM `{project}.{dataset}.fact_player_match_stat` fps
         JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
         JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
         WHERE 1=1
           {_wc_where_clause()}
-          AND fps.goals > 0
+          AND {db_column} > 0
         GROUP BY dp.player_name, dt.team_name
-        ORDER BY goals DESC
-        LIMIT 10
+        ORDER BY metric_val DESC
+        LIMIT 100
     """
     try:
         df = _run_bq(sql)
@@ -145,18 +157,22 @@ def top_scorers_bar_chart() -> go.Figure | None:
         lambda r: f"{get_flag(r['team_name']) or ''} {r['player_name']}", axis=1
     )
 
+    # Calculate chart height: ~28px per bar, min 400px, max 1200px
+    n_rows = len(df)
+    chart_height = max(400, min(1200, n_rows * 28))
+
     fig = px.bar(
-        df.sort_values("goals", ascending=True),
-        x="goals", y="label", orientation="h",
-        title="⚽ Top Scorers",
-        text="goals",
-        color="goals",
+        df.sort_values("metric_val", ascending=True),
+        x="metric_val", y="label", orientation="h",
+        title=f"⚽ Top Scorers — {metric_label}",
+        text="metric_val",
+        color="metric_val",
         color_continuous_scale=["#1e90ff", "#f0c040"],
     )
     fig.update_traces(
         textposition="outside",
         marker_line_width=0,
-        hovertemplate="%{y}: <b>%{x}</b> goals<extra></extra>",
+        hovertemplate=f"%{{y}}: <b>%{{x}}</b> {metric_label}<extra></extra>",
     )
     fig.update_layout(
         template="plotly_dark",
@@ -166,9 +182,15 @@ def top_scorers_bar_chart() -> go.Figure | None:
         title_font_color="#f0c040",
         xaxis_title="",
         yaxis_title="",
-        height=320,
-        margin=dict(l=10, r=10, t=36, b=10),
+        height=chart_height,
+        margin=dict(l=10, r=10, t=46, b=10),
         coloraxis_showscale=False,
+        # Enable vertical scroll when the chart is taller than the container
+        dragmode="pan",
+        yaxis=dict(
+            automargin=True,
+            fixedrange=False,
+        ),
     )
     return fig
 
