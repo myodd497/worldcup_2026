@@ -381,11 +381,11 @@ def _get_bg_data_uri() -> str:
     import base64
 
     # Resolve the image relative to this module's directory
-    _img_path = os.path.join(os.path.dirname(__file__), "Images", "worldcuptrophee.jpeg.webp")
+    _img_path = os.path.join(os.path.dirname(__file__), "Images", "World-Cup-2026-Logo-500x281.png")
     try:
         with open(_img_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        _bg_data_uri = f"data:image/webp;base64,{b64}"
+        _bg_data_uri = f"data:image/png;base64,{b64}"
     except FileNotFoundError:
         # Fallback: use the trophy emoji approach
         _bg_data_uri = ""
