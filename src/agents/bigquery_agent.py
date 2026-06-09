@@ -221,7 +221,9 @@ def _build_user_prompt(
 
 
 def _make_llm() -> ChatOpenAI:
-    return create_chat_model("complex", temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
+    import os
+    tier = os.getenv("BIGQUERY_LLM_TIER", "simple")  # SQL gen on Flash is fast and good enough with few-shots
+    return create_chat_model(tier, temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
 
 
 def _run_agent(
@@ -229,6 +231,7 @@ def _run_agent(
     conversation_context: str | None = None,
     repair: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
+    import time as _time
     llm = _make_llm()
     messages: list[Any] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -238,13 +241,20 @@ def _run_agent(
     sql_attempts = 0
 
     for turn in range(_MAX_TOOL_TURNS):
+        _t_llm = _time.perf_counter()
         ai_msg = llm.invoke(messages)
+        llm_sec = round(_time.perf_counter() - _t_llm, 2)
         messages.append(ai_msg)
 
         tool_calls = getattr(ai_msg, "tool_calls", None) or []
         if not tool_calls:
+            trace.append({"turn": turn, "tool": "_llm_final", "llm_sec": llm_sec})
             return (ai_msg.content or "").strip(), trace
 
+        trace.append({"turn": turn, "tool": "_llm_step", "llm_sec": llm_sec, "n_tool_calls": len(tool_calls)})
+
+        # Parse all tool calls first so we can run independent tools concurrently.
+        parsed_calls: list[tuple[str, dict, Any]] = []  # (name, args, call_id)
         for call in tool_calls:
             name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
             args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
@@ -254,23 +264,50 @@ def _run_agent(
                     args = json.loads(args)
                 except json.JSONDecodeError:
                     args = {}
+            parsed_calls.append((name, args or {}, call_id))
 
+        # Enforce SQL attempt cap before dispatch.
+        prepared: list[tuple[str, dict, Any, str | None]] = []  # (name, args, call_id, forced_result)
+        for name, args, call_id in parsed_calls:
             if name == "run_sql":
                 sql_attempts += 1
                 if sql_attempts > _MAX_SQL_ATTEMPTS:
-                    result = json.dumps({
+                    forced = json.dumps({
                         "error": "Max SQL attempts reached. Stop and answer with what you have.",
                         "row_count": 0,
                     })
-                    trace.append({"turn": turn, "tool": name, "args": args, "result_preview": result[:500]})
-                    messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": result})
+                    prepared.append((name, args, call_id, forced))
                     continue
+            prepared.append((name, args, call_id, None))
 
-            result = _dispatch_tool(name, args or {})
+        # Run tools in parallel when there are 2+ to dispatch (independent calls).
+        from concurrent.futures import ThreadPoolExecutor
+        dispatch_targets = [(i, n, a) for i, (n, a, _, forced) in enumerate(prepared) if forced is None]
+        results_by_idx: dict[int, Any] = {}
+        if len(dispatch_targets) > 1:
+            with ThreadPoolExecutor(max_workers=len(dispatch_targets)) as ex:
+                futures = {ex.submit(_dispatch_tool, n, a): i for i, n, a in dispatch_targets}
+                for fut in futures:
+                    i = futures[fut]
+                    _t_tool = _time.perf_counter()
+                    results_by_idx[i] = (fut.result(), round(_time.perf_counter() - _t_tool, 2))
+        else:
+            for i, n, a in dispatch_targets:
+                _t_tool = _time.perf_counter()
+                results_by_idx[i] = (_dispatch_tool(n, a), round(_time.perf_counter() - _t_tool, 2))
+
+        # Append results in original order so message order matches tool_call_ids.
+        for i, (name, args, call_id, forced) in enumerate(prepared):
+            if forced is not None:
+                trace.append({"turn": turn, "tool": name, "args": args, "result_preview": forced[:500]})
+                messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": forced})
+                continue
+            result, tool_sec = results_by_idx[i]
             metrics = _extract_sql_metrics(name, result)
             trace.append({
                 "turn": turn,
                 "tool": name,
+                "tool_sec": tool_sec,
                 "args": args,
                 "result_preview": result[:500] if isinstance(result, str) else str(result)[:500],
                 **metrics,
@@ -337,7 +374,8 @@ def run_structured(
         "confidence_reason": reason,
         "metadata": {
             "data_source": "bigquery",
-            "tool_calls": [{"tool": t["tool"], "args": t["args"]} for t in trace],
+            "tool_calls": [{"tool": t["tool"], "args": t.get("args", {})} for t in trace],
+            "trace": trace,  # full trace incl. per-step llm_sec / tool_sec timings
             "sql_executed": sql_executed,
             "row_samples": row_samples[:10],
         },
