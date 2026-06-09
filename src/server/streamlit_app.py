@@ -123,45 +123,60 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
-# ── Match & Standings cards side-by-side (above the title on main page, wider) ──
-_col1, _col2 = st.columns([1, 1], gap="small")
+# ── Three cards side-by-side: Match | Standings | Top Scorers ──
+_col1, _col2, _col3 = st.columns([1, 1, 1], gap="small")
 with _col1:
     st.markdown(get_next_match_html(), unsafe_allow_html=True)
 with _col2:
     # Default group selector
+    groups = get_standings_groups()
     if "selected_group" not in st.session_state:
-        groups = get_standings_groups()
+        st.session_state.selected_group = groups[0] if groups else "A"
+    if st.session_state.selected_group not in groups:
         st.session_state.selected_group = groups[0] if groups else "A"
 
     st.markdown(get_standings_html(st.session_state.selected_group), unsafe_allow_html=True)
 
-    # Group selector with arrow navigation
-    groups = get_standings_groups()
+    # Dropdown group picker
     if groups:
-        # Ensure selected group is valid
-        if st.session_state.selected_group not in groups:
-            st.session_state.selected_group = groups[0]
+        st.selectbox(
+            "Group",
+            options=groups,
+            index=groups.index(st.session_state.selected_group),
+            key="group_dropdown",
+            label_visibility="collapsed",
+        )
+        if st.session_state.group_dropdown != st.session_state.selected_group:
+            st.session_state.selected_group = st.session_state.group_dropdown
+            st.rerun()
+with _col3:
+    from src.server.worldcup_style import get_top_scorers_html, get_top_scorer_metrics
 
-        curr_idx = groups.index(st.session_state.selected_group)
+    # Default metric
+    if "selected_metric" not in st.session_state:
+        st.session_state.selected_metric = "goals"
+    metrics = get_top_scorer_metrics()
+    if st.session_state.selected_metric not in metrics:
+        st.session_state.selected_metric = "goals"
 
-        _la, _grp_label, _ra = st.columns([1, 3, 1])
-        with _la:
-            if curr_idx > 0:
-                if st.button("◀", key="grp_prev", use_container_width=True):
-                    st.session_state.selected_group = groups[curr_idx - 1]
-                    st.rerun()
-        with _grp_label:
-            st.markdown(
-                f'<div style="text-align:center;font-size:0.6em;color:#888;'
-                f'text-transform:uppercase;letter-spacing:0.12em;margin-top:4px;">'
-                f'Group {st.session_state.selected_group}</div>',
-                unsafe_allow_html=True,
-            )
-        with _ra:
-            if curr_idx < len(groups) - 1:
-                if st.button("▶", key="grp_next", use_container_width=True):
-                    st.session_state.selected_group = groups[curr_idx + 1]
-                    st.rerun()
+    st.markdown(
+        get_top_scorers_html(st.session_state.selected_metric),
+        unsafe_allow_html=True,
+    )
+
+    # Dropdown metric picker
+    if metrics:
+        current_idx = metrics.index(st.session_state.selected_metric)
+        st.selectbox(
+            "Metric",
+            options=metrics,
+            index=current_idx,
+            key="metric_dropdown",
+            label_visibility="collapsed",
+        )
+        if st.session_state.metric_dropdown != st.session_state.selected_metric:
+            st.session_state.selected_metric = st.session_state.metric_dropdown
+            st.rerun()
 
 # ── Title with trophy icon image ──
 st.markdown(

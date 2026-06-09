@@ -549,15 +549,17 @@ h1 {{
     text-transform: uppercase;
 }}
 
-/* ── Next Match card (centered, compact vertical layout, wider) ── */
+/* ── Next Match card (centered, compact vertical layout) ── */
 .next-match-card {{
     background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
     border: 1px solid rgba(255, 215, 0, 0.2);
     border-radius: 14px;
     padding: 18px 20px;
-    margin: 4px auto 16px auto;
+    padding: 18px 16px;
     max-width: 100%;
     text-align: center;
+    height: 100%;
+    box-sizing: border-box;
 }}
 .next-match-round {{
     font-size: 0.65em;
@@ -631,6 +633,8 @@ h1 {{
     max-width: 100%;
     text-align: center;
     overflow-x: auto;
+    height: 100%;
+    box-sizing: border-box;
 }}
 .standings-header {{
     font-size: 0.7em;
@@ -643,18 +647,18 @@ h1 {{
 .standings-table {{
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.65em;
+    font-size: 0.68em;
     color: #ccc;
 }}
 .standings-table th {{
     color: #888;
     font-weight: 600;
-    padding: 3px 4px;
+    padding: 4px 5px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     white-space: nowrap;
 }}
 .standings-table td {{
-    padding: 2px 4px;
+    padding: 3px 5px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.03);
     white-space: nowrap;
 }}
@@ -684,6 +688,59 @@ h1 {{
 }}
 .standings-row-qualify .standings-rank {{
     color: #f0c040;
+}}
+
+/* ── Top Scorers card ── */
+.topscorers-card {{
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.08) 0%, rgba(10, 31, 46, 0.55) 100%);
+    border: 1px solid rgba(255, 215, 0, 0.2);
+    border-radius: 14px;
+    padding: 18px 20px;
+    max-width: 100%;
+    text-align: center;
+    overflow-x: auto;
+    height: 100%;
+    box-sizing: border-box;
+}}
+.topscorers-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.68em;
+    color: #ccc;
+}}
+.topscorers-table th {{
+    color: #888;
+    font-weight: 600;
+    padding: 4px 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+}}
+.topscorers-table td {{
+    padding: 3px 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    white-space: nowrap;
+}}
+.ts-rank {{
+    font-weight: 700;
+    color: #aaa;
+    width: 28px;
+    white-space: nowrap;
+}}
+.ts-player {{
+    text-align: left !important;
+    font-weight: 600;
+    color: #e0e0e0;
+}}
+.ts-team {{
+    text-align: left !important;
+    color: #bbb;
+    font-size: 0.9em;
+}}
+.ts-goals {{
+    text-align: center;
+    font-weight: 800;
+    color: #f0c040;
+    width: 28px;
 }}
 
 /* ── Card wrapper for side-by-side layout ── */
@@ -1442,6 +1499,171 @@ def _no_standings_fallback_html() -> str:
         '<div class="standings-card">'
         '<div style="text-align:center;color:#aaa;padding:16px;">'
         '📊 Standings not available yet.<br>'
+        '<small>Check back once matches begin.</small>'
+        '</div>'
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top Scorers card — queries BigQuery for the tournament's top players by metric
+# ---------------------------------------------------------------------------
+
+_TOP_SCORER_METRICS = {
+    "goals": ("Goals", "Gls", "goals"),
+    "assists": ("Assists", "Ast", "assists"),
+    "goal contributions": ("Goal Contrib.", "G+A", "goal_contributions"),
+    "minutes played": ("Minutes", "Mins", "minutes_played"),
+    "passes": ("Passes", "Pass", "passes_total"),
+    "passes accurate": ("Pass Acc.", "PAcc", "passes_accurate"),
+    "key passes": ("Key Passes", "KP", "key_passes"),
+    "shots": ("Shots", "Sh", "shots_total"),
+    "shots on target": ("Shots on Tgt", "SoT", "shots_on_target"),
+    "interceptions": ("Intercept.", "Int", "interceptions"),
+    "fouls committed": ("Fouls Cmt", "FC", "fouls_committed"),
+    "fouls drawn": ("Fouls Drn", "FD", "fouls_drawn"),
+    "yellow cards": ("Yellow C.", "YC", "yellow_cards"),
+    "red cards": ("Red C.", "RC", "red_cards"),
+    "saves": ("Saves", "Sv", "saves"),
+    "goals conceded": ("Goals Conc.", "GC", "goals_conceded"),
+    "rating": ("Rating", "Rat", "rating"),
+    "dribbles total": ("Dribbles", "Drb", "dribbles_total"),
+    "dribbles success": ("Drb. Succ", "DrbS", "dribbles_success"),
+    "dribbles success %": ("Drb. Succ%", "Drb%", "perct_of_dribbles_success"),
+    "penalty scored": ("Pen. Scored", "PK+", "penalty_scored"),
+    "penalty missed": ("Pen. Missed", "PK-", "penalty_missed"),
+}
+
+_top_scorers_cache: dict[str, tuple[str, list[dict]]] = {}  # metric -> (col_header, rows)
+_top_scorers_cache_ts: float = 0.0
+
+
+def get_top_scorer_metrics() -> list[str]:
+    """Return list of available metric display names."""
+    return list(_TOP_SCORER_METRICS.keys())
+
+
+def get_top_scorers_html(metric: str = "goals") -> str:
+    """Query BigQuery for the top 10 players by metric in WC2026 and return styled HTML card."""
+    global _top_scorers_cache, _top_scorers_cache_ts
+    import time as _time
+
+    metric = metric.lower()
+    if metric not in _TOP_SCORER_METRICS:
+        metric = "goals"
+
+    metric_label, col_header, db_column = _TOP_SCORER_METRICS[metric]
+
+    now = _time.time()
+    cache_key = f"{metric}"
+    if cache_key in _top_scorers_cache and (now - _top_scorers_cache_ts) < 60:
+        cached_label, rows = _top_scorers_cache[cache_key]
+    else:
+        rows = _fetch_top_by_metric_from_bq(db_column)
+        _top_scorers_cache[cache_key] = (metric_label, rows)
+        _top_scorers_cache_ts = now
+
+    if not rows:
+        return _no_top_scorers_fallback_html()
+
+    return _build_top_scorers_card(rows, metric_label, col_header)
+
+
+def _fetch_top_by_metric_from_bq(db_column: str) -> list[dict]:
+    """Fetch top 10 players by a given metric from fact_player_match_stat.
+    
+    Before June 11, 2026: uses a dummy game (match_id='1528286') for testing.
+    On/after June 11, 2026: queries all WC2026 matches.
+    """
+    try:
+        from src.tools.bigquery_tools import run_query
+        project = os.environ.get("BIGQUERY_PROJECT_ID")
+        dataset = os.environ.get("BIGQUERY_DATASET_ID")
+        if not project or not dataset:
+            return []
+
+        today = date.today()
+        wc_start = date(2026, 6, 11)
+
+        if today < wc_start:
+            # --dummy game for testing until WC starts
+            where_clause = "AND fps.match_id = '1528286'"
+        else:
+            where_clause = "AND fps.competition_id = 1 AND fps.season_year = 2026"
+
+        sql = f"""
+            SELECT
+                dp.player_name,
+                dt.team_name,
+                SUM(fps.{db_column}) AS total_value,
+                COUNT(*) AS matches
+            FROM `{project}.{dataset}.fact_player_match_stat` fps
+            JOIN `{project}.{dataset}.dim_player` dp USING (player_id)
+            JOIN `{project}.{dataset}.dim_team` dt ON dt.team_id = fps.team_id
+            WHERE 1=1
+              {where_clause}
+              AND fps.{db_column} > 0
+            GROUP BY dp.player_name, dt.team_name
+            ORDER BY total_value DESC
+            LIMIT 10
+        """
+        df = run_query(sql)
+        if df.empty:
+            return []
+        return df.to_dict(orient="records")
+    except Exception:
+        return []
+
+
+def _build_top_scorers_card(rows: list[dict], metric_label: str, col_header: str) -> str:
+    """Build an HTML card for top players by metric."""
+    rows_html = ""
+    for i, row in enumerate(rows):
+        rank = i + 1
+        player = str(row.get("player_name", ""))
+        team = str(row.get("team_name", ""))
+        flag = get_flag(team) or ""
+        value = row.get("total_value", 0)
+        # Format value nicely
+        if isinstance(value, float):
+            if "rating" in metric_label.lower() or "pct" in metric_label.lower() or "%" in metric_label.lower():
+                val_str = f"{value:.2f}"
+            else:
+                val_str = f"{value:.1f}" if value != int(value) else str(int(value))
+        else:
+            val_str = str(int(value)) if value else "0"
+
+        medal = ""
+        if rank == 1: medal = "🥇 "
+        elif rank == 2: medal = "🥈 "
+        elif rank == 3: medal = "🥉 "
+
+        rows_html += (
+            f'<tr>'
+            f'<td class="ts-rank">{medal}{rank}</td>'
+            f'<td class="ts-player">⚽ {player}</td>'
+            f'<td class="ts-team">{flag} {team}</td>'
+            f'<td class="ts-goals">{val_str}</td>'
+            f'</tr>'
+        )
+
+    return f"""<div class="topscorers-card">
+    <table class="topscorers-table">
+        <thead>
+            <tr>
+                <th>#</th><th>Player</th><th>Team</th><th>{col_header}</th>
+            </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+</div>"""
+
+
+def _no_top_scorers_fallback_html() -> str:
+    return (
+        '<div class="topscorers-card">'
+        '<div style="text-align:center;color:#aaa;padding:16px;">'
+        '⚽ No goal data yet.<br>'
         '<small>Check back once matches begin.</small>'
         '</div>'
         '</div>'
