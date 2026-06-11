@@ -146,6 +146,7 @@ def _compute_since_date() -> str:
 def _build_raw_steps(
     since_date: str,
     skip_team_fetch: bool = True,
+    force_refresh_non_final: bool = False,
 ) -> list[tuple[str, Callable[[], dict]]]:
     """Return RAW step list with scoping lambdas.
 
@@ -162,6 +163,7 @@ def _build_raw_steps(
             lambda: raw_fixtures.run(
                 skip_team_fetch=skip_team_fetch,
                 since_date=since_date,
+                force_refresh_non_final=force_refresh_non_final,
             ),
         ),
         (
@@ -253,11 +255,27 @@ def _run_steps(label: str, steps: list[tuple[str, Callable[[], dict]]]) -> list[
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def run(*, skip_raw: bool = False, only_marts: bool = False) -> dict:
+def run(
+    *,
+    skip_raw: bool = False,
+    only_marts: bool = False,
+    force_refresh_non_final: bool = False,
+    rerun_14_days: bool = False,
+) -> dict:
     """Execute the pipeline. Returns a dict with per-step results and API usage.
 
     When running with RAW (default), the events/stats sub-steps are scoped by
     `_compute_since_date()` to avoid burning API quota on unlimited history.
+
+    Args:
+        skip_raw: skip the RAW layer entirely (no API calls).
+        only_marts: rebuild marts only.
+        force_refresh_non_final: bypass the 24h freshness skip in raw_fixtures
+            for non-final fixtures — use this to recover from a stale snapshot
+            that locked in a non-final status (NS/1H/2H).
+        rerun_14_days: force since_date back to today−14 days AND enable
+            force_refresh_non_final, so the last two weeks are fully reingested.
+            Useful as a manual backfill button.
     """
     reset_api_usage()
     overall_start = time.time()
@@ -267,9 +285,24 @@ def run(*, skip_raw: bool = False, only_marts: bool = False) -> dict:
         out["steps"].extend(_run_steps("MART", MART_STEPS))
     else:
         if not skip_raw:
-            since_date = _compute_since_date()
-            logger.info("RAW since_date scoping = %s", since_date)
-            raw_steps = _build_raw_steps(since_date=since_date, skip_team_fetch=True)
+            if rerun_14_days:
+                since_date = (date.today() - timedelta(days=14)).isoformat()
+                force_refresh_non_final = True
+                logger.info(
+                    "--rerun-14-days: forcing since_date=%s and force_refresh_non_final=True",
+                    since_date,
+                )
+            else:
+                since_date = _compute_since_date()
+            logger.info(
+                "RAW since_date scoping = %s (force_refresh_non_final=%s)",
+                since_date, force_refresh_non_final,
+            )
+            raw_steps = _build_raw_steps(
+                since_date=since_date,
+                skip_team_fetch=True,
+                force_refresh_non_final=force_refresh_non_final,
+            )
             out["steps"].extend(_run_steps("RAW", raw_steps))
         else:
             logger.info("Skipping RAW layer (--skip-raw)")
@@ -370,6 +403,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the World Cup 2026 datamodel.")
     parser.add_argument("--skip-raw",   action="store_true", help="Skip RAW layer (no API calls).")
     parser.add_argument("--only-marts", action="store_true", help="Rebuild marts only.")
+    parser.add_argument(
+        "--force-refresh-non-final",
+        action="store_true",
+        help=(
+            "Bypass the 24h freshness skip for non-final fixtures in raw_fixtures. "
+            "Use to recover from stale snapshots that locked in NS/1H/2H statuses."
+        ),
+    )
+    parser.add_argument(
+        "--rerun-14-days",
+        action="store_true",
+        help=(
+            "Backfill: force since_date=today−14 days AND enable "
+            "--force-refresh-non-final, reingesting the last 14 days end-to-end."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -387,7 +436,12 @@ def main() -> None:
     error_message: str | None = None
     result: dict = {"steps": []}
     try:
-        result = run(skip_raw=args.skip_raw, only_marts=args.only_marts)
+        result = run(
+            skip_raw=args.skip_raw,
+            only_marts=args.only_marts,
+            force_refresh_non_final=args.force_refresh_non_final,
+            rerun_14_days=args.rerun_14_days,
+        )
         failed = _failed_steps(result)
         if failed:
             status = "PARTIAL_FAILURE"
