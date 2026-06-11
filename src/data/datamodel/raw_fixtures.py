@@ -541,10 +541,15 @@ def backfill_from_legacy() -> dict[str, int]:
 def _ingest_response(
     fixtures: list[dict],
     snapshots: dict[int, FixtureSnapshot],
+    *,
+    force_refresh_non_final: bool = False,
 ) -> tuple[int, int, int]:
     """Given an API response list, writes only the rows that need refresh.
 
     Returns (written, skipped_final, skipped_fresh).
+
+    When `force_refresh_non_final=True`, the TTL freshness skip is bypassed
+    for non-final fixtures (final ones are still skipped — they're immutable).
     """
     now = datetime.now(timezone.utc)
     to_write: list[dict] = []
@@ -555,12 +560,24 @@ def _ingest_response(
         mid = _safe_int(((fix.get("fixture") or {}).get("id")))
         if mid is None:
             continue
+        incoming_status = ((fix.get("fixture") or {}).get("status") or {}).get("short", "") or ""
         snap = snapshots.get(mid)
         if snap is not None:
             if snap.last_status in FINAL_STATUSES:
                 skipped_final += 1
                 continue
-            if (now - snap.last_ingested_at) < timedelta(hours=FRESHNESS_TTL_HOURS):
+            # Always re-ingest if the live status changed (e.g. NS → 1H → FT),
+            # even when our last snapshot is "fresh". Otherwise the freshness
+            # window can lock in a non-final status (NS, 1H, 2H) for up to 24h
+            # and we miss the actual FT result on subsequent runs.
+            status_changed = incoming_status != (snap.last_status or "")
+            incoming_is_final = incoming_status in FINAL_STATUSES
+            if (
+                not force_refresh_non_final
+                and not status_changed
+                and not incoming_is_final
+                and (now - snap.last_ingested_at) < timedelta(hours=FRESHNESS_TTL_HOURS)
+            ):
                 skipped_fresh += 1
                 continue
         row = _normalise_api_fixture(fix, ingested_at=now)
@@ -618,6 +635,7 @@ def ingest_by_league(
     seasons: Iterable[int],
     *,
     snapshots: dict[int, FixtureSnapshot] | None = None,
+    force_refresh_non_final: bool = False,
 ) -> dict[str, int]:
     """Fetches /fixtures?league=&season= per season, writing only delta rows."""
     ensure_table()
@@ -630,7 +648,9 @@ def ingest_by_league(
         data = _get("fixtures", {"league": league_id, "season": season})
         api_calls += 1
         fixtures = data.get("response", []) or []
-        w, sf, sr = _ingest_response(fixtures, snapshots)
+        w, sf, sr = _ingest_response(
+            fixtures, snapshots, force_refresh_non_final=force_refresh_non_final,
+        )
         written += w
         skipped_final += sf
         skipped_fresh += sr
@@ -653,6 +673,7 @@ def ingest_by_team(
     seasons: Iterable[int],
     *,
     snapshots: dict[int, FixtureSnapshot] | None = None,
+    force_refresh_non_final: bool = False,
 ) -> dict[str, int]:
     """Fetches /fixtures?team=&season= per season, writing only delta rows."""
     ensure_table()
@@ -665,7 +686,9 @@ def ingest_by_team(
         data = _get("fixtures", {"team": team_id, "season": season})
         api_calls += 1
         fixtures = data.get("response", []) or []
-        w, sf, sr = _ingest_response(fixtures, snapshots)
+        w, sf, sr = _ingest_response(
+            fixtures, snapshots, force_refresh_non_final=force_refresh_non_final,
+        )
         written += w
         skipped_final += sf
         skipped_fresh += sr
@@ -688,6 +711,7 @@ def ingest_by_date_range(
     end_date: str | None = None,
     *,
     snapshots: dict[int, FixtureSnapshot] | None = None,
+    force_refresh_non_final: bool = False,
 ) -> dict[str, int]:
     """Fetches /fixtures?date=YYYY-MM-DD for each day in [start_date, end_date].
 
@@ -747,7 +771,9 @@ def ingest_by_date_range(
             f for f in fixtures
             if _fixture_is_allowed_for_date_scope(f, allowed_competition_ids)
         ]
-        w, sf, sr = _ingest_response(filtered, snapshots)
+        w, sf, sr = _ingest_response(
+            filtered, snapshots, force_refresh_non_final=force_refresh_non_final,
+        )
         written += w
         skipped_final += sf
         skipped_fresh += sr
@@ -787,6 +813,7 @@ def run(
     team_seasons: list[int] | None = None,
     skip_team_fetch: bool = False,
     since_date: str | None = None,
+    force_refresh_non_final: bool = False,
 ) -> dict[str, object]:
     """Default end-to-end ingestion:
       1) Ensure table exists
@@ -807,6 +834,7 @@ def run(
         WC_LEAGUE_ID,
         league_seasons or WC_LEAGUE_SEASONS,
         snapshots=snapshots,
+        force_refresh_non_final=force_refresh_non_final,
     )
 
     date_stats: dict[str, int] = {
@@ -814,7 +842,11 @@ def run(
         "skipped_final": 0, "skipped_fresh": 0, "days": 0,
     }
     if since_date:
-        date_stats = ingest_by_date_range(since_date, snapshots=snapshots)
+        date_stats = ingest_by_date_range(
+            since_date,
+            snapshots=snapshots,
+            force_refresh_non_final=force_refresh_non_final,
+        )
 
     team_stats: dict[str, int] = {"api_calls": 0, "written": 0,
                                   "skipped_final": 0, "skipped_fresh": 0}
@@ -825,6 +857,7 @@ def run(
                 tid,
                 team_seasons or TEAM_HISTORY_SEASONS,
                 snapshots=snapshots,
+                force_refresh_non_final=force_refresh_non_final,
             )
             for k in team_stats:
                 team_stats[k] += res[k]
