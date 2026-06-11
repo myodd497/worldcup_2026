@@ -7,6 +7,15 @@ on:
     # runs instead of running them in parallel.
     - cron: "17 */3 * * *"
   workflow_dispatch:
+    inputs:
+      rerun_14_days:
+        description: "Backfill last 14 days (forces refresh of non-final fixtures)"
+        type: boolean
+        default: false
+      force_refresh_non_final:
+        description: "Force refresh non-final fixtures (bypass 24h freshness skip)"
+        type: boolean
+        default: false
 
 # Prevent overlapping runs (manual + scheduled).
 concurrency:
@@ -47,7 +56,15 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -o pipefail
-          poetry run python -m src.data.datamodel.build_datamodel 2>&1 | tee etl_output.log
+          ARGS=""
+          if [ "${{ inputs.rerun_14_days }}" = "true" ]; then
+            ARGS="$ARGS --rerun-14-days"
+          fi
+          if [ "${{ inputs.force_refresh_non_final }}" = "true" ]; then
+            ARGS="$ARGS --force-refresh-non-final"
+          fi
+          echo "Running build_datamodel with args:$ARGS"
+          poetry run python -m src.data.datamodel.build_datamodel $ARGS 2>&1 | tee etl_output.log
 
       - name: Print summary (last 60 lines)
         if: always()
