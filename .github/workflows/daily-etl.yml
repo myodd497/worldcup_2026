@@ -2,7 +2,7 @@ name: ETL Every 3h (:33 UTC)
 
 on:
   schedule:
-    - cron: "33 */3 * * *"
+    - cron: "49 13 * * *"
   workflow_dispatch:
 
 # Prevent overlapping runs (manual + scheduled).
