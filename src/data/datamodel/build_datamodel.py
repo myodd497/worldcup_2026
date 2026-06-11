@@ -52,7 +52,11 @@ from typing import Callable
 
 import pandas as pd
 
-from src.tools.api_usage_tracker import get_api_usage_snapshot, reset_api_usage
+from src.tools.api_usage_tracker import (
+    get_api_usage_snapshot,
+    reset_api_usage,
+    set_api_call_budget,
+)
 from src.tools import bigquery_tools as _bq_tools
 
 from src.data.datamodel import (
@@ -255,12 +259,46 @@ def _run_steps(label: str, steps: list[tuple[str, Callable[[], dict]]]) -> list[
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
+def _build_backfill_steps(
+    seasons: list[int],
+) -> list[tuple[str, Callable[[], dict]]]:
+    """RAW backfill steps for one or more historical seasons.
+
+    Differences vs the cron path:
+      * raw_fixtures uses ``backfill_curated_seasons`` (curated comps × seasons)
+      * events/stats/players run unbounded (max_age_days=None) and unscoped by
+        date so every completed fixture in raw_fixtures is processed.
+      * raw_standings still runs (idempotent, dedup by snapshot_date).
+    """
+    return [
+        (
+            "raw_fixtures(backfill)",
+            lambda: raw_fixtures.backfill_curated_seasons(seasons),
+        ),
+        (
+            "raw_fixture_events(backfill)",
+            lambda: raw_fixture_events.run(max_age_days=None),
+        ),
+        (
+            "raw_fixture_statistics(backfill)",
+            lambda: raw_fixture_statistics.run(max_age_days=None),
+        ),
+        (
+            "raw_player_stats(backfill)",
+            lambda: raw_player_stats.run(max_age_days=None),
+        ),
+        ("raw_standings", raw_standings.run),
+    ]
+
+
 def run(
     *,
     skip_raw: bool = False,
     only_marts: bool = False,
     force_refresh_non_final: bool = False,
     rerun_14_days: bool = False,
+    backfill_seasons: list[int] | None = None,
+    max_api_calls: int | None = None,
 ) -> dict:
     """Execute the pipeline. Returns a dict with per-step results and API usage.
 
@@ -276,12 +314,34 @@ def run(
         rerun_14_days: force since_date back to today−14 days AND enable
             force_refresh_non_final, so the last two weeks are fully reingested.
             Useful as a manual backfill button.
+        backfill_seasons: when set, run a multi-season backfill instead of the
+            normal cron path. Iterates curated competitions × seasons via
+            ``raw_fixtures.backfill_curated_seasons``, then runs the per-fixture
+            endpoints (events/stats/players) unbounded so every completed
+            match in those seasons is fully populated.
+        max_api_calls: soft cap on total API calls. When the cap is reached
+            the in-flight RAW step is aborted via ``BudgetExhausted`` and the
+            pipeline still proceeds to DIM/FACT/MART on whatever was
+            successfully written. Use to spread a multi-day backfill across
+            the API-Football daily quota.
     """
     reset_api_usage()
+    set_api_call_budget(max_api_calls)
     overall_start = time.time()
     out: dict = {"steps": []}
 
     if only_marts:
+        out["steps"].extend(_run_steps("MART", MART_STEPS))
+    elif backfill_seasons:
+        logger.info(
+            "--backfill-seasons mode: seasons=%s max_api_calls=%s",
+            backfill_seasons, max_api_calls,
+        )
+        out["steps"].extend(
+            _run_steps("RAW(backfill)", _build_backfill_steps(backfill_seasons))
+        )
+        out["steps"].extend(_run_steps("DIM",  DIM_STEPS))
+        out["steps"].extend(_run_steps("FACT", FACT_STEPS))
         out["steps"].extend(_run_steps("MART", MART_STEPS))
     else:
         if not skip_raw:
@@ -419,6 +479,30 @@ def main() -> None:
             "--force-refresh-non-final, reingesting the last 14 days end-to-end."
         ),
     )
+    parser.add_argument(
+        "--backfill-seasons",
+        type=str,
+        default=None,
+        help=(
+            "Multi-season historical backfill of curated club competitions. "
+            "Comma-separated season years, e.g. '2025' or '2024,2025,2026'. "
+            "Iterates CURATED_TOP_COMPETITION_IDS x seasons via /fixtures, "
+            "then ingests events/statistics/players for every completed match "
+            "(unbounded by max_age_days). Combine with --max-api-calls to "
+            "spread across the daily quota."
+        ),
+    )
+    parser.add_argument(
+        "--max-api-calls",
+        type=int,
+        default=None,
+        help=(
+            "Soft cap on total API-Football calls for this run. When reached, "
+            "in-flight RAW step aborts cleanly and downstream DIM/FACT/MART "
+            "still execute on partial data. Resume the next day to pick up "
+            "where this run left off."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -441,6 +525,11 @@ def main() -> None:
             only_marts=args.only_marts,
             force_refresh_non_final=args.force_refresh_non_final,
             rerun_14_days=args.rerun_14_days,
+            backfill_seasons=(
+                [int(s) for s in args.backfill_seasons.split(",") if s.strip()]
+                if args.backfill_seasons else None
+            ),
+            max_api_calls=args.max_api_calls,
         )
         failed = _failed_steps(result)
         if failed:
