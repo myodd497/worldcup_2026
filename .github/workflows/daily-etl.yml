@@ -1,8 +1,11 @@
-name: ETL Every day at (13:49 UTC)
+name: ETL (every 3h, off-hour minute)
 
 on:
   schedule:
-    - cron: "49 13 * * *"
+    # Every 3 hours at :17 — avoids the busy top-of-hour window when GitHub
+    # delays/drops scheduled runs. Concurrency group below queues overlapping
+    # runs instead of running them in parallel.
+    - cron: "17 */3 * * *"
   workflow_dispatch:
 
 # Prevent overlapping runs (manual + scheduled).
