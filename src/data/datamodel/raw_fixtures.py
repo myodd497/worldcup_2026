@@ -153,7 +153,7 @@ FINAL_STATUSES = {"FT", "AET", "PEN", "AWD", "WO"}
 # Re-fetch non-final fixtures if our latest snapshot is older than this.
 FRESHNESS_TTL_HOURS = 24
 # Polite throttling between API calls.
-API_SLEEP_SECONDS = 0.12
+API_SLEEP_SECONDS = 0.06
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +794,72 @@ def ingest_by_date_range(
 # ---------------------------------------------------------------------------
 # Default orchestration
 # ---------------------------------------------------------------------------
+
+def backfill_curated_seasons(
+    seasons: Iterable[int],
+    *,
+    competition_ids: Iterable[int] | None = None,
+) -> dict[str, object]:
+    """Backfill /fixtures by league for every (competition, season) pair.
+
+    Iterates ``competition_ids`` (defaults to ``CURATED_TOP_COMPETITION_IDS``)
+    and for each competition fetches every season in ``seasons`` via
+    ``ingest_by_league``. Honours the global API call budget; if
+    ``BudgetExhausted`` is raised mid-loop, the partial progress is preserved
+    and the budget exception is re-raised so the CLI can exit cleanly.
+
+    Cost: 1 API call per (competition, season). For the default 50-comp
+    curated list and 2 seasons that is ~100 /fixtures calls.
+    """
+    ensure_table()
+    snapshots = _latest_snapshot_per_match()
+
+    comp_ids = sorted(competition_ids) if competition_ids else sorted(
+        CURATED_TOP_COMPETITION_IDS
+    )
+    seasons_list = sorted({int(s) for s in seasons})
+
+    api_calls = 0
+    written = skipped_final = skipped_fresh = 0
+    per_comp: dict[int, dict[str, int]] = {}
+
+    logger.info(
+        "backfill_curated_seasons: comps=%d seasons=%s -> ~%d /fixtures calls",
+        len(comp_ids), seasons_list, len(comp_ids) * len(seasons_list),
+    )
+
+    for cid in comp_ids:
+        try:
+            res = ingest_by_league(
+                cid,
+                seasons_list,
+                snapshots=snapshots,
+                # Backfill should refresh stale non-final fixtures so a
+                # half-played match in the target season ends up final.
+                force_refresh_non_final=True,
+            )
+        except Exception:
+            # Budget exhaustion or any other error stops the loop early but
+            # we still want to surface what was done so far.
+            logger.exception("backfill_curated_seasons: aborting at comp_id=%s", cid)
+            raise
+        per_comp[cid] = res
+        api_calls += res["api_calls"]
+        written += res["written"]
+        skipped_final += res["skipped_final"]
+        skipped_fresh += res["skipped_fresh"]
+
+    summary = {
+        "api_calls": api_calls,
+        "written": written,
+        "skipped_final": skipped_final,
+        "skipped_fresh": skipped_fresh,
+        "competitions": len(comp_ids),
+        "seasons": seasons_list,
+    }
+    logger.info("backfill_curated_seasons summary: %s", summary)
+    return summary
+
 
 def _load_wc_team_ids_from_legacy() -> list[tuple[int, str]]:
     """Returns (team_id, team_name) for WC 2026 participants from the legacy
