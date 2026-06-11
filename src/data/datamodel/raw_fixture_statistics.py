@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "raw_fixture_statistics"
 API_BASE = "https://v3.football.api-sports.io"
-API_SLEEP_SECONDS = 0.12
+API_SLEEP_SECONDS = 0.06
 BATCH_SIZE = 50  # flush every N matches
 
 
@@ -215,7 +215,7 @@ def _matches_missing_stats(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> list[tuple[int, datetime | None]]:
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
 
@@ -305,7 +305,7 @@ def ingest_missing(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict[str, int]:
     ensure_table()
     targets = _matches_missing_stats(
@@ -372,7 +372,7 @@ def run(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict[str, object]:
     ensure_table()
     backfilled = backfill_from_legacy()
