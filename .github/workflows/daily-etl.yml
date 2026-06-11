@@ -1,4 +1,4 @@
-name: ETL Every 3h (:33 UTC)
+name: ETL Every day at (13:49 UTC)
 
 on:
   schedule:
