@@ -1,11 +1,12 @@
-name: ETL (every 3h, off-hour minute)
+name: ETL (hourly, off-hour minute)
 
 on:
   schedule:
-    # Every 3 hours at :17 — avoids the busy top-of-hour window when GitHub
-    # delays/drops scheduled runs. Concurrency group below queues overlapping
-    # runs instead of running them in parallel.
-    - cron: "17 */3 * * *"
+    # Every hour at :17 — off-the-hour minute avoids the busy top-of-hour
+    # window when GitHub delays/drops scheduled runs. Shared concurrency
+    # group with backfill-etl ensures we never burn quota by running both
+    # in parallel against the same /fixtures URLs.
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       rerun_14_days:
@@ -17,9 +18,10 @@ on:
         type: boolean
         default: false
 
-# Prevent overlapping runs (manual + scheduled).
+# Shared with backfill-etl.yml so the hourly cron queues behind any
+# multi-hour backfill instead of double-spending API quota.
 concurrency:
-  group: daily-etl
+  group: etl-shared
   cancel-in-progress: false
 
 jobs:
