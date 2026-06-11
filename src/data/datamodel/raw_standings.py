@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "raw_standings"
 API_BASE = "https://v3.football.api-sports.io"
-API_SLEEP_SECONDS = 0.12
+API_SLEEP_SECONDS = 0.06
 
 # Default scope: WC + likely qualifier comps. Keep small; expand as needed.
 DEFAULT_LEAGUE_SEASONS: list[tuple[int, int]] = [
