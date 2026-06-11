@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 TABLE_NAME = "raw_fixture_events"
 API_BASE = "https://v3.football.api-sports.io"
 API_SLEEP_SECONDS = 0.06
+BATCH_SIZE = 50  # flush every N matches
 
 
 # ---------------------------------------------------------------------------
@@ -334,33 +335,38 @@ def ingest_missing(
     matches_with_events = 0
     matches_with_no_events = 0
     now = datetime.now(timezone.utc)
+    buffer: list[dict] = []
 
-    for match_id, match_date in targets:
+    for idx, (match_id, match_date) in enumerate(targets, start=1):
         data = _get("fixtures/events", {"fixture": match_id})
         api_calls += 1
         events = data.get("response", []) or []
 
         if not events:
             matches_with_no_events += 1
-            time.sleep(API_SLEEP_SECONDS)
-            continue
-
-        rows = [
-            _normalise_event(
-                ev, match_id=match_id, match_date=match_date,
-                event_seq=i + 1, ingested_at=now,
+        else:
+            buffer.extend(
+                _normalise_event(
+                    ev, match_id=match_id, match_date=match_date,
+                    event_seq=i + 1, ingested_at=now,
+                )
+                for i, ev in enumerate(events)
             )
-            for i, ev in enumerate(events)
-        ]
-        written += _write_rows(rows)
-        matches_with_events += 1
+            matches_with_events += 1
+
+        if idx % BATCH_SIZE == 0:
+            written += _write_rows(buffer)
+            buffer.clear()
+            logger.info(
+                "  progress: api=%d/%d written=%d matches_with_events=%d empty=%d",
+                api_calls, len(targets), written, matches_with_events, matches_with_no_events,
+            )
+
         time.sleep(API_SLEEP_SECONDS)
 
-        if api_calls % 50 == 0:
-            logger.info(
-                "  progress: api=%d written=%d matches_with_events=%d empty=%d",
-                api_calls, written, matches_with_events, matches_with_no_events,
-            )
+    # Final flush of any remaining rows.
+    written += _write_rows(buffer)
+    buffer.clear()
 
     summary = {
         "api_calls": api_calls,
