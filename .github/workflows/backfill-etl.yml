@@ -1,0 +1,82 @@
+name: ETL Backfill (manual, long-running)
+
+# Long-running multi-season backfill of curated club competitions. Runs on
+# demand only \u2014 never on a schedule. Shares the same concurrency group as
+# the hourly cron so they cannot overlap and double-spend API quota.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backfill_seasons:
+        description: "Comma-separated season years, e.g. '2025' or '2023,2024,2025'."
+        type: string
+        required: true
+        default: "2025"
+      max_api_calls:
+        description: "Soft cap on API calls. Leave empty for no cap (Ultra plan = 75k/day)."
+        type: string
+        default: ""
+
+concurrency:
+  group: etl-shared
+  cancel-in-progress: false
+
+jobs:
+  run-backfill:
+    runs-on: ubuntu-latest
+    # 6 hours \u2014 generous cap for the multi-season scenario at Ultra throughput.
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v3
+        with:
+          poetry-version: "2.4.1"
+
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction --no-ansi
+
+      - name: Run backfill
+        id: backfill
+        env:
+          BIGQUERY_PROJECT_ID: ${{ secrets.BIGQUERY_PROJECT_ID }}
+          BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_INFO: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_INFO }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -o pipefail
+          ARGS="--backfill-seasons ${{ inputs.backfill_seasons }}"
+          if [ -n "${{ inputs.max_api_calls }}" ]; then
+            ARGS="$ARGS --max-api-calls ${{ inputs.max_api_calls }}"
+          fi
+          echo "Running build_datamodel with args:$ARGS"
+          poetry run python -m src.data.datamodel.build_datamodel $ARGS 2>&1 | tee backfill_output.log
+
+      - name: Print summary (last 80 lines)
+        if: always()
+        run: tail -80 backfill_output.log || true
+
+      - name: Upload full log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-log-${{ github.run_id }}
+          path: backfill_output.log
+          retention-days: 30
+
+      - name: Mark job failed on backfill error
+        if: failure()
+        run: |
+          echo "::error::Backfill failed. See uploaded artifact 'backfill-log-${{ github.run_id }}' and the etl_run_status BigQuery table."
+          exit 1
