@@ -15,7 +15,24 @@ _STATE: dict[str, Any] = {
     "requests_remaining": None,
     "requests_limit": None,
     "last_quota_headers": {},
+    "budget_max_calls": None,  # soft cap on total_calls; None = no cap
 }
+
+
+class BudgetExhausted(RuntimeError):
+    """Raised by ``record_api_call`` when the configured budget is reached.
+
+    Callers should catch this in long-running backfill loops to stop cleanly
+    while leaving partial work committed.
+    """
+
+
+def set_api_call_budget(max_calls: int | None) -> None:
+    """Set a soft cap on total API calls. Pass ``None`` to disable."""
+    with _LOCK:
+        _STATE["budget_max_calls"] = (
+            int(max_calls) if max_calls is not None and max_calls > 0 else None
+        )
 
 
 def _as_int(value: str | None) -> int | None:
@@ -34,6 +51,8 @@ def reset_api_usage() -> None:
         _STATE["requests_remaining"] = None
         _STATE["requests_limit"] = None
         _STATE["last_quota_headers"] = {}
+        # NOTE: keep budget_max_calls untouched across resets so a CLI-level
+        # `--max-api-calls` survives any internal reset_api_usage() calls.
 
 
 def record_api_call(endpoint: str, response_headers: dict[str, str] | None = None) -> None:
@@ -71,6 +90,13 @@ def record_api_call(endpoint: str, response_headers: dict[str, str] | None = Non
         }
         if quota_headers:
             _STATE["last_quota_headers"] = quota_headers
+
+        budget = _STATE.get("budget_max_calls")
+        if budget is not None and _STATE["total_calls"] >= budget:
+            raise BudgetExhausted(
+                f"API call budget reached: total_calls={_STATE['total_calls']} "
+                f"budget={budget}"
+            )
 
 
 def get_api_usage_snapshot() -> dict[str, Any]:
