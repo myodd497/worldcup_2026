@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "raw_fixture_events"
 API_BASE = "https://v3.football.api-sports.io"
-API_SLEEP_SECONDS = 0.12
+API_SLEEP_SECONDS = 0.06
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def _matches_missing_events(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> list[tuple[int, datetime | None]]:
     """Returns completed matches in raw_fixtures still missing from raw_fixture_events.
 
@@ -313,7 +313,7 @@ def ingest_missing(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict[str, int]:
     """Fetches /fixtures/events for completed matches still missing from raw_fixture_events.
 
@@ -377,7 +377,7 @@ def run(
     *,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict[str, object]:
     ensure_table()
     backfilled = backfill_from_legacy()
