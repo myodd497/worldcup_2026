@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "raw_player_stats"
 API_BASE = "https://v3.football.api-sports.io"
-API_SLEEP_SECONDS = 0.12
+API_SLEEP_SECONDS = 0.06
 BATCH_SIZE = 50  # flush every N matches
 
 
@@ -256,7 +256,7 @@ def ingest_missing(
     limit: int | None = None,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict:
     """Fetch player stats from API-Football for completed matches that don't yet
     have player data in raw_player_stats. Respects API rate limits.
@@ -411,7 +411,7 @@ def run(
     limit: int | None = None,
     competition_ids: list[int] | None = None,
     since_date: str | None = None,
-    max_age_days: int | None = 7,
+    max_age_days: int | None = 30,
 ) -> dict:
     """Fetch player stats from API-Football for matches missing data.
 
