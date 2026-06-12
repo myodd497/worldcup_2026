@@ -221,11 +221,33 @@ def _table_doc(spec: TableSpec) -> str:
 
 def search_schema_tool(question: str, top_k: int = 5) -> str:
     """Markdown bundle of the most relevant tables — drop into the prompt."""
+    cache_key = ((question or "").strip().lower(), int(top_k))
+    cached = _SCHEMA_TOOL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     tables = search_schema(question, top_k=top_k)
     if not tables:
-        return "_(no relevant tables found)_"
-    parts = [f"## Relevant tables (top {len(tables)})"]
-    for spec in tables:
-        parts.append("")
-        parts.append(format_table_detail_for_llm(spec.name))
-    return "\n".join(parts)
+        result = "_(no relevant tables found)_"
+    else:
+        parts = [f"## Relevant tables (top {len(tables)})"]
+        for spec in tables:
+            parts.append("")
+            parts.append(format_table_detail_for_llm(spec.name))
+        result = "\n".join(parts)
+    # Bounded LRU-ish cache: drop oldest if it grows past the cap.
+    if len(_SCHEMA_TOOL_CACHE) >= _SCHEMA_TOOL_CACHE_MAX:
+        # Pop the oldest inserted key (dicts preserve insertion order).
+        _SCHEMA_TOOL_CACHE.pop(next(iter(_SCHEMA_TOOL_CACHE)))
+    _SCHEMA_TOOL_CACHE[cache_key] = result
+    return result
+
+
+# Bounded cache for the rendered markdown bundle. Skips both the embedding call
+# and the table-detail formatting on repeat questions.
+_SCHEMA_TOOL_CACHE: dict[tuple[str, int], str] = {}
+_SCHEMA_TOOL_CACHE_MAX = 128
+
+
+def clear_schema_cache() -> None:
+    """Test/debug hook — drop the cached schema bundles."""
+    _SCHEMA_TOOL_CACHE.clear()
