@@ -198,8 +198,11 @@ def _build_user_prompt(
     question: str,
     conversation_context: str | None,
     repair: dict[str, Any] | None = None,
+    schema_override: str | None = None,
 ) -> str:
-    schema_block = search_schema_tool(question, top_k=5)
+    # Allow callers (e.g. summary fan-out) to pass a pre-computed schema block
+    # so we don't run the embedding retriever N times for the same topic.
+    schema_block = schema_override if schema_override is not None else search_schema_tool(question, top_k=5)
     few_shot_block = format_few_shots(question, k=3)
 
     parts: list[str] = []
@@ -227,6 +230,34 @@ def _make_llm() -> ChatOpenAI:
     return create_chat_model(tier, temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
 
 
+# DeepSeek V4 sometimes serialises a function call into the assistant `content`
+# field using its internal DSML markup (e.g. `｜｜DSML｜｜invoke name="run_sql"`).
+# Detect and strip these so the user never sees them.
+import re as _re
+
+_DSML_MARKER_RE = _re.compile(r"[｜|]{2}DSML[｜|]{2}", _re.IGNORECASE)
+_DSML_BLOCK_RE = _re.compile(
+    r"[｜|]{2}DSML[｜|]{2}\s*(?:tool_calls|invoke|parameter)[^\n]*?(?=[｜|]{2}DSML[｜|]{2}|\Z)",
+    _re.IGNORECASE | _re.DOTALL,
+)
+
+
+def _looks_like_leaked_tool_call(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_DSML_MARKER_RE.search(text))
+
+
+def _sanitize_answer(text: str) -> str:
+    """Strip leaked DSML tool-call markup from a final answer, just in case."""
+    if not text or "DSML" not in text.upper():
+        return text
+    cleaned = _DSML_BLOCK_RE.sub("", text)
+    # Also wipe any stray DSML markers that survived the block sub.
+    cleaned = _DSML_MARKER_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
 def _force_final_answer(messages: list[Any], reason: str) -> str:
     """Last-resort: ask the LLM (no tools bound) to compose an answer from whatever
     tool results are already in `messages`. Used when the turn / SQL budget is
@@ -249,7 +280,7 @@ def _force_final_answer(messages: list[Any], reason: str) -> str:
         ai = plain_llm.invoke(messages + [nudge])
         text = (getattr(ai, "content", "") or "").strip()
         if text:
-            return text
+            return _sanitize_answer(text)
     except Exception as exc:
         logger.warning("forced final answer failed: %s", exc)
     return (
@@ -262,18 +293,21 @@ def _run_agent(
     question: str,
     conversation_context: str | None = None,
     repair: dict[str, Any] | None = None,
+    max_turns: int | None = None,
+    schema_override: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     import time as _time
     llm = _make_llm()
     messages: list[Any] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user",   "content": _build_user_prompt(question, conversation_context, repair=repair)},
+        {"role": "user",   "content": _build_user_prompt(question, conversation_context, repair=repair, schema_override=schema_override)},
     ]
     trace: list[dict[str, Any]] = []
     sql_attempts = 0
     sql_consecutive_failures = 0
+    turn_budget = max_turns if max_turns is not None else _MAX_TOOL_TURNS
 
-    for turn in range(_MAX_TOOL_TURNS):
+    for turn in range(turn_budget):
         _t_llm = _time.perf_counter()
         ai_msg = llm.invoke(messages)
         llm_sec = round(_time.perf_counter() - _t_llm, 2)
@@ -281,8 +315,31 @@ def _run_agent(
 
         tool_calls = getattr(ai_msg, "tool_calls", None) or []
         if not tool_calls:
+            raw = (ai_msg.content or "").strip()
+            # DeepSeek V4 occasionally serialises a tool-call into the `content`
+            # field instead of the structured `tool_calls` slot (leaks the
+            # `｜｜DSML｜｜invoke name=...` markup as plain text). Detect, recover,
+            # and nudge the model to retry with proper function-calling.
+            if _looks_like_leaked_tool_call(raw):
+                trace.append({
+                    "turn": turn,
+                    "tool": "_llm_leaked_toolcall",
+                    "llm_sec": llm_sec,
+                    "preview": raw[:200],
+                })
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Your previous reply leaked tool-call markup into the answer text. "
+                        "Tool calls MUST be emitted via the structured function-calling "
+                        "interface, never as plain text. Either issue the tool call properly "
+                        "now, or write the final markdown answer using ONLY the tool results "
+                        "already gathered."
+                    ),
+                })
+                continue
             trace.append({"turn": turn, "tool": "_llm_final", "llm_sec": llm_sec})
-            return (ai_msg.content or "").strip(), trace
+            return _sanitize_answer(raw), trace
 
         trace.append({"turn": turn, "tool": "_llm_step", "llm_sec": llm_sec, "n_tool_calls": len(tool_calls)})
 
@@ -367,9 +424,9 @@ def _run_agent(
     # Turn budget exhausted — salvage whatever was gathered instead of dropping it.
     final = _force_final_answer(
         messages,
-        reason=f"hit _MAX_TOOL_TURNS={_MAX_TOOL_TURNS} (sql_attempts={sql_attempts})",
+        reason=f"hit turn budget={turn_budget} (sql_attempts={sql_attempts})",
     )
-    trace.append({"turn": _MAX_TOOL_TURNS, "tool": "_forced_final"})
+    trace.append({"turn": turn_budget, "tool": "_forced_final"})
     return final, trace
 
 
@@ -390,9 +447,17 @@ def run_structured(
     query: str,
     conversation_context: str | None = None,
     repair: dict[str, Any] | None = None,
+    max_turns: int | None = None,
+    schema_override: str | None = None,
 ) -> dict[str, Any]:
     try:
-        answer, trace = _run_agent(query, conversation_context=conversation_context, repair=repair)
+        answer, trace = _run_agent(
+            query,
+            conversation_context=conversation_context,
+            repair=repair,
+            max_turns=max_turns,
+            schema_override=schema_override,
+        )
     except Exception as exc:
         logger.exception("bigquery_agent failed")
         return {
@@ -448,17 +513,18 @@ def run(query: str) -> str:
 _SUMMARY_DECOMPOSE_PROMPT = """\
 You are planning a structured summary about a football entity.
 
-Decompose the user's broad question into 3-6 FOCUSED, INDEPENDENT sub-questions
-that together cover the topic. Each sub-question must be answerable with a
-SINGLE BigQuery query against a football data warehouse (dim/fact/mart tables
-covering matches, results, goals, players, standings, fixtures).
+Decompose the user's broad question into 3-4 FOCUSED, INDEPENDENT sub-questions
+that together cover the topic. Fewer is better — only add a sub-question if it
+reveals a genuinely different angle.
+
+Each sub-question must be answerable with a SINGLE BigQuery query against a
+football data warehouse (dim/fact/mart tables covering matches, results, goals,
+players, standings, fixtures).
 
 Rules:
 - Each sub-question stands alone (no pronouns referring to others).
 - Each one names the entity and time range explicitly.
-- Prefer concrete angles: overall record, league/cup results, top scorers,
-  top assisters, clean sheets, recent form, biggest wins/losses, head-to-head
-  highlights, key fixtures remaining.
+- Prefer concrete angles: overall record, top scorers, recent form, key fixtures.
 - Skip angles that clearly don't apply (e.g. "WC2026 group stage" for a club).
 - Return ONLY a JSON array of strings. No prose, no markdown.
 
@@ -501,7 +567,7 @@ def _decompose_summary(question: str) -> list[str]:
         subs = json.loads(raw)
         if isinstance(subs, list):
             cleaned = [str(s).strip() for s in subs if str(s).strip()]
-            return cleaned[:6]
+            return cleaned[:4]
     except Exception as exc:
         logger.warning("summary decomposition failed: %s", exc)
     # Fallback: a single sub-question = the original question. The bigquery
@@ -524,11 +590,31 @@ def run_summary_structured(
     sub_questions = _decompose_summary(query)
     logger.info("summary fan-out: %d sub-questions for %r", len(sub_questions), query[:80])
 
+    # Schema retrieval is the same expensive embedding call for every sub-question
+    # about the same entity. Compute it ONCE against the broad parent question
+    # (better topical anchor than any narrow sub-question) and reuse.
+    try:
+        from src.data.datamodel.schema_retriever import search_schema_tool as _search
+        shared_schema = _search(query, top_k=5)
+    except Exception as exc:
+        logger.warning("shared schema retrieval failed (%s); sub-questions will retrieve individually", exc)
+        shared_schema = None
+
     t0 = _time.perf_counter()
     sub_results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(len(sub_questions), 6)) as ex:
+    # Each sub-question is focused (one SQL angle) — small turn budget keeps the
+    # slowest parallel branch from dragging the whole summary down.
+    sub_max_turns = 6
+    with ThreadPoolExecutor(max_workers=min(len(sub_questions), 4)) as ex:
         futures = {
-            ex.submit(run_structured, sq, conversation_context): sq
+            ex.submit(
+                run_structured,
+                sq,
+                conversation_context,
+                None,
+                sub_max_turns,
+                shared_schema,
+            ): sq
             for sq in sub_questions
         }
         for fut in futures:
@@ -557,7 +643,9 @@ def run_summary_structured(
         for item in sub_results
     ]
     try:
-        composer = create_chat_model("complex", temperature=0, max_retries=3, timeout=60)
+        # Simple tier is enough — the composer just stitches grounded text into
+        # markdown sections. Complex tier with thinking was the main slowdown.
+        composer = create_chat_model("simple", temperature=0, max_retries=3, timeout=45)
         composed = composer.invoke(
             _SUMMARY_COMPOSE_PROMPT.format(
                 question=query,
