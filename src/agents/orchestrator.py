@@ -37,6 +37,7 @@ class OrchestratorState(TypedDict):
     selected_agent: str
     selected_agents: list[str]
     needs_verifier: bool
+    is_summary: bool
     agent_outputs: dict[str, dict[str, Any]]
     agent_payload: dict[str, Any]
     verifier_verdict: dict[str, Any]
@@ -84,6 +85,7 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
     agents = plan.get("agents") or ["chat"]
     primary = plan.get("primary_agent") or agents[0]
     needs_verifier = bool(plan.get("needs_verifier", "bigquery" in agents))
+    is_summary = bool(plan.get("is_summary", False)) and "bigquery" in agents
 
     result: OrchestratorState = {
         **state,
@@ -91,6 +93,7 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
         "selected_agent": primary,
         "topic": plan.get("topic") or "",
         "needs_verifier": needs_verifier,
+        "is_summary": is_summary,
     }
     tracker.log_step(
         "plan", status="executed",
@@ -98,6 +101,7 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
         output_data={
             "agents": agents, "primary_agent": primary,
             "topic": plan.get("topic"), "needs_verifier": needs_verifier,
+            "is_summary": is_summary,
             "reason": plan.get("reason"),
         },
     )
@@ -107,6 +111,14 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
 # ── Node: execute ───────────────────────────────────────────────────────────
 
 def _run_bigquery(state: OrchestratorState) -> dict[str, Any]:
+    # Broad summary/overview questions get the plan-then-fan-out path so they don't
+    # blow past the single-loop turn budget.
+    if state.get("is_summary"):
+        from src.agents.bigquery_agent import run_summary_structured
+        return run_summary_structured(
+            state["user_message"],
+            conversation_context=state.get("conversation_context"),
+        )
     from src.agents.bigquery_agent import run_structured as run_bq
     return run_bq(state["user_message"], conversation_context=state.get("conversation_context"))
 
