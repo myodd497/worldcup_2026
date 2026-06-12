@@ -522,13 +522,25 @@ football data warehouse (dim/fact/mart tables covering matches, results, goals,
 players, standings, fixtures).
 
 Rules:
-- Each sub-question stands alone (no pronouns referring to others).
-- Each one names the entity and time range explicitly.
+- Each sub-question stands alone (no pronouns referring to others, no
+  references to "the players above" or "these teams" — inline the actual names
+  from the conversation context if relevant).
+- Each one names the entity AND the time range EXPLICITLY. The current real-
+  world date is {today}. When the user says "this season", "current season",
+  "recent", or gives no season, use the most recently completed/in-progress
+  season (e.g. "2025-2026" or season_year=2025). NEVER default to historical
+  seasons like 2023-2024 unless the user asked for them.
+- If the conversation context lists specific entities (players, fixtures,
+  lineup), reuse THOSE exact names/ids — do not invent a new "top 10" list.
 - Prefer concrete angles: overall record, top scorers, recent form, key fixtures.
 - Skip angles that clearly don't apply (e.g. "WC2026 group stage" for a club).
 - Return ONLY a JSON array of strings. No prose, no markdown.
 
-User question: {question}
+## Conversation context (may be empty)
+{context}
+
+## User question
+{question}
 """.strip()
 
 
@@ -536,27 +548,50 @@ _SUMMARY_COMPOSE_PROMPT = """\
 You are composing ONE coherent markdown summary from several sub-answers that
 were each grounded in BigQuery results.
 
-Rules:
-- Use short markdown sections with ## headings (one per sub-topic that had
-  useful data).
-- Quote concrete numbers / names from the sub-answers — do not invent any.
-- If a sub-answer reports "no data" or an error, omit that section.
-- End with a one-line caveat if any sub-answer failed.
+STRICT GROUNDING RULES (read carefully — violating these is worse than a short answer):
+- You may ONLY mention entities (players, clubs, scores, dates, numbers) that
+  appear VERBATIM in the sub-answers below. Do NOT add names or stats from
+  your own knowledge, even if you are sure they are correct.
+- If a sub-answer says "no data", "not available", "not extracted", "could
+  not be retrieved", or is otherwise empty of concrete facts, DROP that
+  section entirely. Do not write a section that admits to having no data.
+- If a sub-answer lists fewer entities than the user asked for, only mention
+  the ones actually returned. Do not pad the list from memory.
+- Use short markdown sections with ## headings, one per sub-topic that
+  actually has concrete data.
+- If NONE of the sub-answers produced concrete data, reply with a single short
+  paragraph saying the warehouse did not have what was asked, and suggest the
+  user narrow the question.
+- End with a one-line italic caveat ONLY if some (not all) sub-answers were
+  empty, listing which angles are missing.
 - Keep it tight; this is for a WhatsApp/web assistant.
 
 Original user question:
 {question}
 
-Sub-question results (JSON):
+Sub-question results (JSON — `usable=false` means the sub-answer had no
+concrete data and MUST be ignored):
 {sub_results}
 """.strip()
 
 
-def _decompose_summary(question: str) -> list[str]:
-    """Use the simple-tier LLM to break the question into sub-questions."""
+def _decompose_summary(question: str, conversation_context: str | None = None) -> list[str]:
+    """Use the simple-tier LLM to break the question into sub-questions.
+
+    The decomposer gets the current date and the conversation context so it can
+    (a) resolve "this season" to the right year and (b) carry forward entities
+    the user already named (e.g. a lineup from a prior turn).
+    """
+    from datetime import date as _date
     try:
         llm = create_chat_model("simple", temperature=0, max_retries=3, timeout=30)
-        raw = llm.invoke(_SUMMARY_DECOMPOSE_PROMPT.format(question=question)).content or ""
+        raw = llm.invoke(
+            _SUMMARY_DECOMPOSE_PROMPT.format(
+                question=question,
+                context=(conversation_context or "None")[:4000],
+                today=_date.today().isoformat(),
+            )
+        ).content or ""
         raw = raw.strip()
         # Strip ```json fences if present.
         if raw.startswith("```"):
@@ -575,6 +610,155 @@ def _decompose_summary(question: str) -> list[str]:
     return [question]
 
 
+# ── Entity allow-list scrub ─────────────────────────────────────────────────
+
+# Sentence-start / common capitalised words that should NOT be treated as
+# proper-noun evidence (otherwise every sentence starting with "The" would be
+# flagged). Domain section headings get included so headings survive.
+_SCRUB_STOPWORDS = {
+    "the", "a", "an", "this", "these", "those", "their", "they", "he", "she",
+    "it", "his", "her", "its", "and", "or", "but", "if", "when", "while",
+    "however", "note", "summary", "overview", "key", "season", "stats",
+    "statistics", "data", "players", "player", "club", "clubs", "team", "teams",
+    "match", "matches", "game", "games", "goals", "assists", "appearances",
+    "minutes", "league", "cup", "based", "here", "no", "yes", "missing",
+    "available", "retrieved", "not", "some", "all", "most", "top", "best",
+    "first", "second", "third", "last", "next", "for", "from", "with", "of",
+    "in", "on", "at", "by", "as", "to", "vs", "won", "lost", "drew", "draw",
+    "win", "wins", "loss", "losses", "draws", "points", "position", "form",
+    "starts", "starter", "substitute", "substitutes", "minutes_played",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    # Nationality / language adjectives — frequent false positives when they
+    # start a sentence ("The top Portuguese players by goals are:").
+    "portuguese", "spanish", "english", "french", "german", "italian", "dutch",
+    "belgian", "brazilian", "argentine", "argentinian", "mexican", "american",
+    "canadian", "moroccan", "egyptian", "nigerian", "ghanaian", "senegalese",
+    "japanese", "korean", "saudi", "iranian", "uruguayan", "colombian",
+    "chilean", "ecuadorian", "peruvian", "australian", "croatian", "serbian",
+    "polish", "swiss", "austrian", "danish", "swedish", "norwegian", "scottish",
+    "irish", "welsh", "european", "african", "asian", "south", "north",
+}
+
+# Match either: a multi-word capitalised phrase (e.g. "Cristiano Ronaldo",
+# "Manchester United", "Al Hilal", "Paris Saint-Germain") OR a single
+# capitalised word of length >= 4 that could plausibly be a proper noun.
+# Allows hyphens, apostrophes, and accented characters (Léao, Félix).
+_PROPER_NOUN_RE = _re.compile(
+    r"\b([A-ZÀ-Ý][\wÀ-ÿ'\-]*"          # first capitalised word
+    r"(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'\-]*)*)",  # optional additional capitalised words
+    _re.UNICODE,
+)
+
+
+def _extract_proper_nouns(text: str) -> set[str]:
+    """Extract proper-noun phrases as lowercase strings, ignoring stopwords."""
+    found: set[str] = set()
+    for match in _PROPER_NOUN_RE.finditer(text or ""):
+        phrase = match.group(1).strip()
+        lo = phrase.lower()
+        # Single short words and pure stopwords don't count as proper nouns.
+        if " " not in phrase and (len(phrase) < 4 or lo in _SCRUB_STOPWORDS):
+            continue
+        # Multi-word phrases: drop if every token is a stopword.
+        if " " in phrase and all(tok.lower() in _SCRUB_STOPWORDS for tok in phrase.split()):
+            continue
+        found.add(lo)
+    return found
+
+
+def _scrub_unknown_entities(
+    composed: str,
+    usable_sub_answers: list[str],
+    row_samples: list[Any],
+) -> tuple[str, list[str]]:
+    """Drop sentences in the composed answer that mention a proper-noun phrase
+    not present anywhere in the grounded source material.
+
+    Returns the cleaned text + a list of dropped sentences (for logging).
+    Conservative: lower-case words and numbers pass freely; only proper-noun
+    phrases trigger checks. Headings (`##`, `-`, `*`) are inspected too, but
+    their leading markdown is preserved when re-emitting kept content.
+    """
+    if not composed:
+        return composed, []
+
+    # Build the allow-list from all usable sub-answers + raw row sample JSON.
+    allow: set[str] = set()
+    for ans in usable_sub_answers:
+        allow |= _extract_proper_nouns(ans)
+    try:
+        import json as _json
+        for rs in row_samples:
+            allow |= _extract_proper_nouns(_json.dumps(rs, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+
+    # Substring-tolerant containment: "Ronaldo" in allow lets "Cristiano Ronaldo"
+    # pass even if only the surname appeared in the sources, and vice versa.
+    def _allowed(phrase: str) -> bool:
+        if phrase in allow:
+            return True
+        for known in allow:
+            if phrase in known or known in phrase:
+                return True
+        return False
+
+    kept_lines: list[str] = []
+    dropped: list[str] = []
+    for raw_line in composed.splitlines():
+        stripped = raw_line.strip()
+        # Headings, blank lines, separators, code fences: keep as-is.
+        if not stripped or stripped.startswith(("#", "```", "---", "===")):
+            kept_lines.append(raw_line)
+            continue
+
+        # Split the line into sentences. Keep markdown bullet/numbering prefix
+        # so list structure survives.
+        prefix_match = _re.match(r"^(\s*(?:[-*+]|\d+\.)\s+)", raw_line)
+        prefix = prefix_match.group(1) if prefix_match else ""
+        body = raw_line[len(prefix):] if prefix else raw_line
+
+        sentences = _re.split(r"(?<=[.!?])\s+", body.strip())
+        kept_sentences: list[str] = []
+        for sent in sentences:
+            nouns = _extract_proper_nouns(sent)
+            bad = [n for n in nouns if not _allowed(n)]
+            if bad:
+                dropped.append(sent)
+            else:
+                kept_sentences.append(sent)
+
+        if kept_sentences:
+            kept_lines.append(prefix + " ".join(kept_sentences))
+        # If every sentence on a bullet was dropped, drop the bullet entirely.
+
+    cleaned = "\n".join(kept_lines).strip()
+
+    # If the scrub left us with only headings / nothing, fall back to a short
+    # honest message rather than shipping an empty shell.
+    has_content = any(
+        line.strip() and not line.strip().startswith(("#", "```", "---", "==="))
+        for line in cleaned.splitlines()
+    )
+    if not has_content:
+        cleaned = (
+            "The data warehouse did not return enough concrete information to "
+            "summarise this. Try narrowing the question (e.g. ask about one "
+            "specific player, team, or season)."
+        )
+
+    if dropped:
+        cleaned = (
+            cleaned
+            + "\n\n*Note: parts of the draft answer were removed because they "
+              "referenced entities not present in the retrieved data.*"
+        )
+
+    return cleaned, dropped
+
+
 def run_summary_structured(
     query: str,
     conversation_context: str | None = None,
@@ -587,7 +771,7 @@ def run_summary_structured(
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    sub_questions = _decompose_summary(query)
+    sub_questions = _decompose_summary(query, conversation_context=conversation_context)
     logger.info("summary fan-out: %d sub-questions for %r", len(sub_questions), query[:80])
 
     # Schema retrieval is the same expensive embedding call for every sub-question
@@ -633,19 +817,39 @@ def run_summary_structured(
                 })
     fanout_sec = round(_time.perf_counter() - t0, 2)
 
+    # Hedge detection: the heuristic _confidence() returns 0.85 whenever *any*
+    # rows came back, even garbage from a discovery query. If the answer text
+    # admits to missing data, the sub-answer is NOT usable for the composer.
+    _HEDGE_PHRASES = (
+        "no data", "not available", "not extracted", "could not be retrieved",
+        "couldn't be retrieved", "were not extracted", "no results", "0 rows",
+        "no rows", "unable to retrieve", "no matching", "could not find",
+        "not found in the database", "not in the database", "missing data",
+        "data is not available", "n/a", "(sub-question failed",
+    )
+
+    def _is_usable(answer_text: str) -> bool:
+        if not answer_text or len(answer_text.strip()) < 20:
+            return False
+        lo = answer_text.lower()
+        return not any(p in lo for p in _HEDGE_PHRASES)
+
     # Compose the final markdown answer from the sub-answers.
-    compact = [
-        {
+    compact = []
+    for item in sub_results:
+        ans = str(item["result"].get("answer", ""))
+        usable = _is_usable(ans)
+        compact.append({
             "sub_question": item["question"],
-            "answer": str(item["result"].get("answer", ""))[:1500],
+            "answer": ans[:1500],
+            "usable": usable,
             "confidence": float(item["result"].get("confidence_score", 0.0) or 0.0),
-        }
-        for item in sub_results
-    ]
+        })
     try:
-        # Simple tier is enough — the composer just stitches grounded text into
-        # markdown sections. Complex tier with thinking was the main slowdown.
-        composer = create_chat_model("simple", temperature=0, max_retries=3, timeout=45)
+        # Complex tier: the composer must follow strict anti-hallucination rules
+        # (ignore unusable sub-answers, never invent entities from training data).
+        # Simple tier was too eager to "help" by padding with prior knowledge.
+        composer = create_chat_model("complex", temperature=0, max_retries=3, timeout=60)
         composed = composer.invoke(
             _SUMMARY_COMPOSE_PROMPT.format(
                 question=query,
@@ -660,21 +864,53 @@ def run_summary_structured(
             f"### {item['sub_question']}\n{item['answer']}" for item in sub_results
         ) or f"Summary composition failed: {exc}"
 
+    # Entity allow-list scrub: hard guarantee that the composer didn't smuggle in
+    # entity names from its training data. We extract proper-noun phrases that
+    # appear in the (usable) sub-answers + row samples, then drop any sentence
+    # in the composed markdown that mentions a proper-noun phrase NOT in that
+    # allow-list. Conservative: only proper-noun phrases (2+ capitalised words,
+    # or a long single capitalised word). Numbers and lower-case words pass.
+    try:
+        final_answer, dropped = _scrub_unknown_entities(
+            final_answer,
+            usable_sub_answers=[c["answer"] for c in compact if c["usable"]],
+            row_samples=[item["result"].get("metadata", {}).get("row_samples") or []
+                         for item in sub_results],
+        )
+        if dropped:
+            logger.warning("entity scrub dropped %d sentence(s): %s",
+                           len(dropped), dropped[:3])
+    except Exception as exc:
+        logger.warning("entity scrub failed (%s); returning raw composed answer", exc)
+        dropped = []
+
     # Merge metadata across sub-runs.
     merged_sql: list[str] = []
     merged_rows: list[dict] = []
     merged_traces: list[Any] = []
-    confidences: list[float] = []
-    for item in sub_results:
+    effective_confidences: list[float] = []
+    for item, c in zip(sub_results, compact):
         meta = (item["result"].get("metadata") or {})
         merged_sql.extend(meta.get("sql_executed") or [])
         merged_rows.extend(meta.get("row_samples") or [])
         merged_traces.append({"sub_question": item["question"], "trace": meta.get("trace")})
-        confidences.append(float(item["result"].get("confidence_score", 0.0) or 0.0))
+        raw_conf = float(item["result"].get("confidence_score", 0.0) or 0.0)
+        # Hedged / empty sub-answers get capped at 0.3 regardless of how many
+        # rows the heuristic counted — those rows did not answer the question.
+        effective_confidences.append(raw_conf if c["usable"] else min(raw_conf, 0.3))
 
-    avg_conf = round(sum(confidences) / len(confidences), 2) if confidences else 0.4
-    n_ok = sum(1 for c in confidences if c >= 0.5)
-    reason = f"Summary fan-out: {n_ok}/{len(sub_results)} sub-questions returned grounded answers."
+    n_usable = sum(1 for c in compact if c["usable"])
+    if not effective_confidences:
+        avg_conf = 0.3
+    elif n_usable == 0:
+        # Nothing answered the question — be honest with the user.
+        avg_conf = 0.25
+    else:
+        avg_conf = round(sum(effective_confidences) / len(effective_confidences), 2)
+    reason = (
+        f"Summary fan-out: {n_usable}/{len(sub_results)} sub-questions returned "
+        f"concrete data (others were empty or hedged)."
+    )
 
     return {
         "answer": final_answer,
@@ -688,6 +924,7 @@ def run_summary_structured(
             "sql_executed": merged_sql,
             "row_samples": merged_rows[:15],
             "sub_traces": merged_traces,
+            "scrubbed_sentences": dropped,
         },
     }
 
