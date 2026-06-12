@@ -227,6 +227,37 @@ def _make_llm() -> ChatOpenAI:
     return create_chat_model(tier, temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
 
 
+def _force_final_answer(messages: list[Any], reason: str) -> str:
+    """Last-resort: ask the LLM (no tools bound) to compose an answer from whatever
+    tool results are already in `messages`. Used when the turn / SQL budget is
+    exhausted so we never throw away the data we already retrieved.
+    """
+    try:
+        import os
+        tier = os.getenv("BIGQUERY_LLM_TIER", "complex")
+        plain_llm = create_chat_model(tier, temperature=0, max_retries=3, timeout=60, tools=False)
+        nudge = {
+            "role": "system",
+            "content": (
+                f"BUDGET EXHAUSTED ({reason}). You have NO more tool calls available. "
+                "Write the best possible markdown answer NOW using ONLY the tool results "
+                "already present in this conversation. If some sub-aspects of the question "
+                "were not covered, list them under a short 'Not retrieved' note instead of "
+                "guessing. Do not apologise. Do not promise to try again."
+            ),
+        }
+        ai = plain_llm.invoke(messages + [nudge])
+        text = (getattr(ai, "content", "") or "").strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.warning("forced final answer failed: %s", exc)
+    return (
+        "I ran out of reasoning turns before producing a complete answer. "
+        "Please narrow the question (e.g. ask about one specific aspect)."
+    )
+
+
 def _run_agent(
     question: str,
     conversation_context: str | None = None,
@@ -333,10 +364,13 @@ def _run_agent(
                 "content": result,
             })
 
-    return (
-        "I ran out of reasoning turns before producing an answer. Please rephrase the question.",
-        trace,
+    # Turn budget exhausted — salvage whatever was gathered instead of dropping it.
+    final = _force_final_answer(
+        messages,
+        reason=f"hit _MAX_TOOL_TURNS={_MAX_TOOL_TURNS} (sql_attempts={sql_attempts})",
     )
+    trace.append({"turn": _MAX_TOOL_TURNS, "tool": "_forced_final"})
+    return final, trace
 
 
 def _confidence(trace: list[dict[str, Any]]) -> tuple[float, str]:
@@ -398,6 +432,176 @@ def run_structured(
 
 def run(query: str) -> str:
     return run_structured(query)["answer"]
+
+
+# ── Summary fan-out (broad "overview/summary" questions) ────────────────────
+#
+# Open-ended questions like "summarise FC Porto 2025-2026 season" easily blow
+# past `_MAX_TOOL_TURNS` because a single agent loop tries to cover too many
+# angles (record, top scorers, form, transfers, …) in one go. Plan-then-fan-out:
+#   1. decompose the question into N focused sub-questions (one LLM call)
+#   2. run each sub-question through `run_structured` in parallel
+#   3. compose ONE markdown summary from the sub-answers
+#
+# Each sub-question gets its own full tool budget, so nothing is lost.
+
+_SUMMARY_DECOMPOSE_PROMPT = """\
+You are planning a structured summary about a football entity.
+
+Decompose the user's broad question into 3-6 FOCUSED, INDEPENDENT sub-questions
+that together cover the topic. Each sub-question must be answerable with a
+SINGLE BigQuery query against a football data warehouse (dim/fact/mart tables
+covering matches, results, goals, players, standings, fixtures).
+
+Rules:
+- Each sub-question stands alone (no pronouns referring to others).
+- Each one names the entity and time range explicitly.
+- Prefer concrete angles: overall record, league/cup results, top scorers,
+  top assisters, clean sheets, recent form, biggest wins/losses, head-to-head
+  highlights, key fixtures remaining.
+- Skip angles that clearly don't apply (e.g. "WC2026 group stage" for a club).
+- Return ONLY a JSON array of strings. No prose, no markdown.
+
+User question: {question}
+""".strip()
+
+
+_SUMMARY_COMPOSE_PROMPT = """\
+You are composing ONE coherent markdown summary from several sub-answers that
+were each grounded in BigQuery results.
+
+Rules:
+- Use short markdown sections with ## headings (one per sub-topic that had
+  useful data).
+- Quote concrete numbers / names from the sub-answers — do not invent any.
+- If a sub-answer reports "no data" or an error, omit that section.
+- End with a one-line caveat if any sub-answer failed.
+- Keep it tight; this is for a WhatsApp/web assistant.
+
+Original user question:
+{question}
+
+Sub-question results (JSON):
+{sub_results}
+""".strip()
+
+
+def _decompose_summary(question: str) -> list[str]:
+    """Use the simple-tier LLM to break the question into sub-questions."""
+    try:
+        llm = create_chat_model("simple", temperature=0, max_retries=3, timeout=30)
+        raw = llm.invoke(_SUMMARY_DECOMPOSE_PROMPT.format(question=question)).content or ""
+        raw = raw.strip()
+        # Strip ```json fences if present.
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        subs = json.loads(raw)
+        if isinstance(subs, list):
+            cleaned = [str(s).strip() for s in subs if str(s).strip()]
+            return cleaned[:6]
+    except Exception as exc:
+        logger.warning("summary decomposition failed: %s", exc)
+    # Fallback: a single sub-question = the original question. The bigquery
+    # agent will still get to run, just without parallel fan-out benefit.
+    return [question]
+
+
+def run_summary_structured(
+    query: str,
+    conversation_context: str | None = None,
+) -> dict[str, Any]:
+    """Plan-then-fan-out runner for broad summary/overview questions.
+
+    Each sub-question is executed by `run_structured` in parallel threads, then a
+    single LLM call stitches the sub-answers into a coherent markdown summary.
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    sub_questions = _decompose_summary(query)
+    logger.info("summary fan-out: %d sub-questions for %r", len(sub_questions), query[:80])
+
+    t0 = _time.perf_counter()
+    sub_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(len(sub_questions), 6)) as ex:
+        futures = {
+            ex.submit(run_structured, sq, conversation_context): sq
+            for sq in sub_questions
+        }
+        for fut in futures:
+            sq = futures[fut]
+            try:
+                sub_results.append({"question": sq, "result": fut.result()})
+            except Exception as exc:
+                logger.exception("summary sub-question failed: %s", sq)
+                sub_results.append({
+                    "question": sq,
+                    "result": {
+                        "answer": f"(sub-question failed: {exc})",
+                        "confidence_score": 0.0,
+                        "metadata": {"error": str(exc)},
+                    },
+                })
+    fanout_sec = round(_time.perf_counter() - t0, 2)
+
+    # Compose the final markdown answer from the sub-answers.
+    compact = [
+        {
+            "sub_question": item["question"],
+            "answer": str(item["result"].get("answer", ""))[:1500],
+            "confidence": float(item["result"].get("confidence_score", 0.0) or 0.0),
+        }
+        for item in sub_results
+    ]
+    try:
+        composer = create_chat_model("complex", temperature=0, max_retries=3, timeout=60)
+        composed = composer.invoke(
+            _SUMMARY_COMPOSE_PROMPT.format(
+                question=query,
+                sub_results=json.dumps(compact, ensure_ascii=False, indent=2),
+            )
+        ).content
+        final_answer = (composed or "").strip() or "No data was retrieved for this summary."
+    except Exception as exc:
+        logger.exception("summary composition failed")
+        # Concatenation fallback so we still return SOMETHING grounded.
+        final_answer = "\n\n".join(
+            f"### {item['sub_question']}\n{item['answer']}" for item in sub_results
+        ) or f"Summary composition failed: {exc}"
+
+    # Merge metadata across sub-runs.
+    merged_sql: list[str] = []
+    merged_rows: list[dict] = []
+    merged_traces: list[Any] = []
+    confidences: list[float] = []
+    for item in sub_results:
+        meta = (item["result"].get("metadata") or {})
+        merged_sql.extend(meta.get("sql_executed") or [])
+        merged_rows.extend(meta.get("row_samples") or [])
+        merged_traces.append({"sub_question": item["question"], "trace": meta.get("trace")})
+        confidences.append(float(item["result"].get("confidence_score", 0.0) or 0.0))
+
+    avg_conf = round(sum(confidences) / len(confidences), 2) if confidences else 0.4
+    n_ok = sum(1 for c in confidences if c >= 0.5)
+    reason = f"Summary fan-out: {n_ok}/{len(sub_results)} sub-questions returned grounded answers."
+
+    return {
+        "answer": final_answer,
+        "confidence_score": avg_conf,
+        "confidence_reason": reason,
+        "metadata": {
+            "data_source": "bigquery",
+            "mode": "summary_fanout",
+            "fanout_sec": fanout_sec,
+            "sub_questions": sub_questions,
+            "sql_executed": merged_sql,
+            "row_samples": merged_rows[:15],
+            "sub_traces": merged_traces,
+        },
+    }
 
 
 if __name__ == "__main__":
