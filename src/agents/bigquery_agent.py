@@ -4,7 +4,7 @@ Architecture (state-of-the-art):
   1. resolve_entity (deterministic team/player name → id)
   2. search_schema  (retrieves only the 3-5 relevant tables)
   3. few_shots      (retrieved Q→SQL examples — not hardcoded recipes)
-    4. SQL generator  (complex LLM tier, function-calling)
+  4. SQL generator  (gpt-4o, function-calling)
   5. run_sql        (validate → dry-run + cost guard → execute)
   6. structured repair loop on failure (max 2 attempts with the actual error)
   7. compose grounded markdown answer
@@ -24,7 +24,6 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from src.agents.llm_config import create_chat_model
 from src.agents.sql_few_shots import format_few_shots
 from src.data.datamodel.schema_retriever import search_schema_tool
 from src.tools.datamodel_tools import (
@@ -37,9 +36,9 @@ from src.tools.entity_resolver import resolve_player_tool, resolve_team_tool
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_TURNS = 12
-_MAX_SQL_ATTEMPTS = 20          # hard cap on total run_sql calls per question
-_MAX_SQL_FAILURES = 5           # consecutive failed run_sql calls before forcing the agent to stop
+_MODEL_NAME = "gpt-4o"          # SQL generation is the quality-critical step
+_MAX_TOOL_TURNS = 10
+_MAX_SQL_ATTEMPTS = 3           # initial + 2 repairs
 
 
 _TOOLS_SCHEMA = [
@@ -198,11 +197,8 @@ def _build_user_prompt(
     question: str,
     conversation_context: str | None,
     repair: dict[str, Any] | None = None,
-    schema_override: str | None = None,
 ) -> str:
-    # Allow callers (e.g. summary fan-out) to pass a pre-computed schema block
-    # so we don't run the embedding retriever N times for the same topic.
-    schema_block = schema_override if schema_override is not None else search_schema_tool(question, top_k=5)
+    schema_block = search_schema_tool(question, top_k=5)
     few_shot_block = format_few_shots(question, k=3)
 
     parts: list[str] = []
@@ -225,126 +221,30 @@ def _build_user_prompt(
 
 
 def _make_llm() -> ChatOpenAI:
-    import os
-    tier = os.getenv("BIGQUERY_LLM_TIER", "complex")  # SQL gen on Flash is fast and good enough with few-shots
-    return create_chat_model(tier, temperature=0, max_retries=6, timeout=60, tools=True).bind_tools(_TOOLS_SCHEMA)
-
-
-# DeepSeek V4 sometimes serialises a function call into the assistant `content`
-# field using its internal DSML markup (e.g. `｜｜DSML｜｜invoke name="run_sql"`).
-# Detect and strip these so the user never sees them.
-import re as _re
-
-_DSML_MARKER_RE = _re.compile(r"[｜|]{2}DSML[｜|]{2}", _re.IGNORECASE)
-_DSML_BLOCK_RE = _re.compile(
-    r"[｜|]{2}DSML[｜|]{2}\s*(?:tool_calls|invoke|parameter)[^\n]*?(?=[｜|]{2}DSML[｜|]{2}|\Z)",
-    _re.IGNORECASE | _re.DOTALL,
-)
-
-
-def _looks_like_leaked_tool_call(text: str) -> bool:
-    if not text:
-        return False
-    return bool(_DSML_MARKER_RE.search(text))
-
-
-def _sanitize_answer(text: str) -> str:
-    """Strip leaked DSML tool-call markup from a final answer, just in case."""
-    if not text or "DSML" not in text.upper():
-        return text
-    cleaned = _DSML_BLOCK_RE.sub("", text)
-    # Also wipe any stray DSML markers that survived the block sub.
-    cleaned = _DSML_MARKER_RE.sub("", cleaned)
-    return cleaned.strip()
-
-
-def _force_final_answer(messages: list[Any], reason: str) -> str:
-    """Last-resort: ask the LLM (no tools bound) to compose an answer from whatever
-    tool results are already in `messages`. Used when the turn / SQL budget is
-    exhausted so we never throw away the data we already retrieved.
-    """
-    try:
-        import os
-        tier = os.getenv("BIGQUERY_LLM_TIER", "complex")
-        plain_llm = create_chat_model(tier, temperature=0, max_retries=3, timeout=60, tools=False)
-        nudge = {
-            "role": "system",
-            "content": (
-                f"BUDGET EXHAUSTED ({reason}). You have NO more tool calls available. "
-                "Write the best possible markdown answer NOW using ONLY the tool results "
-                "already present in this conversation. If some sub-aspects of the question "
-                "were not covered, list them under a short 'Not retrieved' note instead of "
-                "guessing. Do not apologise. Do not promise to try again."
-            ),
-        }
-        ai = plain_llm.invoke(messages + [nudge])
-        text = (getattr(ai, "content", "") or "").strip()
-        if text:
-            return _sanitize_answer(text)
-    except Exception as exc:
-        logger.warning("forced final answer failed: %s", exc)
-    return (
-        "I ran out of reasoning turns before producing a complete answer. "
-        "Please narrow the question (e.g. ask about one specific aspect)."
-    )
+    return ChatOpenAI(model=_MODEL_NAME, temperature=0, max_retries=6, timeout=60).bind_tools(_TOOLS_SCHEMA)
 
 
 def _run_agent(
     question: str,
     conversation_context: str | None = None,
     repair: dict[str, Any] | None = None,
-    max_turns: int | None = None,
-    schema_override: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    import time as _time
     llm = _make_llm()
     messages: list[Any] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user",   "content": _build_user_prompt(question, conversation_context, repair=repair, schema_override=schema_override)},
+        {"role": "user",   "content": _build_user_prompt(question, conversation_context, repair=repair)},
     ]
     trace: list[dict[str, Any]] = []
     sql_attempts = 0
-    sql_consecutive_failures = 0
-    turn_budget = max_turns if max_turns is not None else _MAX_TOOL_TURNS
 
-    for turn in range(turn_budget):
-        _t_llm = _time.perf_counter()
+    for turn in range(_MAX_TOOL_TURNS):
         ai_msg = llm.invoke(messages)
-        llm_sec = round(_time.perf_counter() - _t_llm, 2)
         messages.append(ai_msg)
 
         tool_calls = getattr(ai_msg, "tool_calls", None) or []
         if not tool_calls:
-            raw = (ai_msg.content or "").strip()
-            # DeepSeek V4 occasionally serialises a tool-call into the `content`
-            # field instead of the structured `tool_calls` slot (leaks the
-            # `｜｜DSML｜｜invoke name=...` markup as plain text). Detect, recover,
-            # and nudge the model to retry with proper function-calling.
-            if _looks_like_leaked_tool_call(raw):
-                trace.append({
-                    "turn": turn,
-                    "tool": "_llm_leaked_toolcall",
-                    "llm_sec": llm_sec,
-                    "preview": raw[:200],
-                })
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "Your previous reply leaked tool-call markup into the answer text. "
-                        "Tool calls MUST be emitted via the structured function-calling "
-                        "interface, never as plain text. Either issue the tool call properly "
-                        "now, or write the final markdown answer using ONLY the tool results "
-                        "already gathered."
-                    ),
-                })
-                continue
-            trace.append({"turn": turn, "tool": "_llm_final", "llm_sec": llm_sec})
-            return _sanitize_answer(raw), trace
+            return (ai_msg.content or "").strip(), trace
 
-        trace.append({"turn": turn, "tool": "_llm_step", "llm_sec": llm_sec, "n_tool_calls": len(tool_calls)})
-
-        # Parse all tool calls first so we can run independent tools concurrently.
-        parsed_calls: list[tuple[str, dict, Any]] = []  # (name, args, call_id)
         for call in tool_calls:
             name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
             args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
@@ -354,62 +254,23 @@ def _run_agent(
                     args = json.loads(args)
                 except json.JSONDecodeError:
                     args = {}
-            parsed_calls.append((name, args or {}, call_id))
 
-        # Enforce SQL attempt caps before dispatch.
-        prepared: list[tuple[str, dict, Any, str | None]] = []  # (name, args, call_id, forced_result)
-        for name, args, call_id in parsed_calls:
             if name == "run_sql":
                 sql_attempts += 1
                 if sql_attempts > _MAX_SQL_ATTEMPTS:
-                    forced = json.dumps({
-                        "error": f"Max SQL attempts ({_MAX_SQL_ATTEMPTS}) reached. Stop and answer with what you have.",
+                    result = json.dumps({
+                        "error": "Max SQL attempts reached. Stop and answer with what you have.",
                         "row_count": 0,
                     })
-                    prepared.append((name, args, call_id, forced))
+                    trace.append({"turn": turn, "tool": name, "args": args, "result_preview": result[:500]})
+                    messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": result})
                     continue
-                if sql_consecutive_failures >= _MAX_SQL_FAILURES:
-                    forced = json.dumps({
-                        "error": f"{_MAX_SQL_FAILURES} consecutive SQL failures. Stop repairing and answer with what you have.",
-                        "row_count": 0,
-                    })
-                    prepared.append((name, args, call_id, forced))
-                    continue
-            prepared.append((name, args, call_id, None))
 
-        # Run tools in parallel when there are 2+ to dispatch (independent calls).
-        from concurrent.futures import ThreadPoolExecutor
-        dispatch_targets = [(i, n, a) for i, (n, a, _, forced) in enumerate(prepared) if forced is None]
-        results_by_idx: dict[int, Any] = {}
-        if len(dispatch_targets) > 1:
-            with ThreadPoolExecutor(max_workers=len(dispatch_targets)) as ex:
-                futures = {ex.submit(_dispatch_tool, n, a): i for i, n, a in dispatch_targets}
-                for fut in futures:
-                    i = futures[fut]
-                    _t_tool = _time.perf_counter()
-                    results_by_idx[i] = (fut.result(), round(_time.perf_counter() - _t_tool, 2))
-        else:
-            for i, n, a in dispatch_targets:
-                _t_tool = _time.perf_counter()
-                results_by_idx[i] = (_dispatch_tool(n, a), round(_time.perf_counter() - _t_tool, 2))
-
-        # Append results in original order so message order matches tool_call_ids.
-        for i, (name, args, call_id, forced) in enumerate(prepared):
-            if forced is not None:
-                trace.append({"turn": turn, "tool": name, "args": args, "result_preview": forced[:500]})
-                messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": forced})
-                continue
-            result, tool_sec = results_by_idx[i]
+            result = _dispatch_tool(name, args or {})
             metrics = _extract_sql_metrics(name, result)
-            if name == "run_sql":
-                if metrics.get("error"):
-                    sql_consecutive_failures += 1
-                else:
-                    sql_consecutive_failures = 0
             trace.append({
                 "turn": turn,
                 "tool": name,
-                "tool_sec": tool_sec,
                 "args": args,
                 "result_preview": result[:500] if isinstance(result, str) else str(result)[:500],
                 **metrics,
@@ -421,13 +282,10 @@ def _run_agent(
                 "content": result,
             })
 
-    # Turn budget exhausted — salvage whatever was gathered instead of dropping it.
-    final = _force_final_answer(
-        messages,
-        reason=f"hit turn budget={turn_budget} (sql_attempts={sql_attempts})",
+    return (
+        "I ran out of reasoning turns before producing an answer. Please rephrase the question.",
+        trace,
     )
-    trace.append({"turn": turn_budget, "tool": "_forced_final"})
-    return final, trace
 
 
 def _confidence(trace: list[dict[str, Any]]) -> tuple[float, str]:
@@ -447,17 +305,9 @@ def run_structured(
     query: str,
     conversation_context: str | None = None,
     repair: dict[str, Any] | None = None,
-    max_turns: int | None = None,
-    schema_override: str | None = None,
 ) -> dict[str, Any]:
     try:
-        answer, trace = _run_agent(
-            query,
-            conversation_context=conversation_context,
-            repair=repair,
-            max_turns=max_turns,
-            schema_override=schema_override,
-        )
+        answer, trace = _run_agent(query, conversation_context=conversation_context, repair=repair)
     except Exception as exc:
         logger.exception("bigquery_agent failed")
         return {
@@ -487,8 +337,7 @@ def run_structured(
         "confidence_reason": reason,
         "metadata": {
             "data_source": "bigquery",
-            "tool_calls": [{"tool": t["tool"], "args": t.get("args", {})} for t in trace],
-            "trace": trace,  # full trace incl. per-step llm_sec / tool_sec timings
+            "tool_calls": [{"tool": t["tool"], "args": t["args"]} for t in trace],
             "sql_executed": sql_executed,
             "row_samples": row_samples[:10],
         },
@@ -497,436 +346,6 @@ def run_structured(
 
 def run(query: str) -> str:
     return run_structured(query)["answer"]
-
-
-# ── Summary fan-out (broad "overview/summary" questions) ────────────────────
-#
-# Open-ended questions like "summarise FC Porto 2025-2026 season" easily blow
-# past `_MAX_TOOL_TURNS` because a single agent loop tries to cover too many
-# angles (record, top scorers, form, transfers, …) in one go. Plan-then-fan-out:
-#   1. decompose the question into N focused sub-questions (one LLM call)
-#   2. run each sub-question through `run_structured` in parallel
-#   3. compose ONE markdown summary from the sub-answers
-#
-# Each sub-question gets its own full tool budget, so nothing is lost.
-
-_SUMMARY_DECOMPOSE_PROMPT = """\
-You are planning a structured summary about a football entity.
-
-Decompose the user's broad question into 3-4 FOCUSED, INDEPENDENT sub-questions
-that together cover the topic. Fewer is better — only add a sub-question if it
-reveals a genuinely different angle.
-
-Each sub-question must be answerable with a SINGLE BigQuery query against a
-football data warehouse (dim/fact/mart tables covering matches, results, goals,
-players, standings, fixtures).
-
-Rules:
-- Each sub-question stands alone (no pronouns referring to others, no
-  references to "the players above" or "these teams" — inline the actual names
-  from the conversation context if relevant).
-- Each one names the entity AND the time range EXPLICITLY. The current real-
-  world date is {today}. When the user says "this season", "current season",
-  "recent", or gives no season, use the most recently completed/in-progress
-  season (e.g. "2025-2026" or season_year=2025). NEVER default to historical
-  seasons like 2023-2024 unless the user asked for them.
-- If the conversation context lists specific entities (players, fixtures,
-  lineup), reuse THOSE exact names/ids — do not invent a new "top 10" list.
-- Prefer concrete angles: overall record, top scorers, recent form, key fixtures.
-- Skip angles that clearly don't apply (e.g. "WC2026 group stage" for a club).
-- Return ONLY a JSON array of strings. No prose, no markdown.
-
-## Conversation context (may be empty)
-{context}
-
-## User question
-{question}
-""".strip()
-
-
-_SUMMARY_COMPOSE_PROMPT = """\
-You are composing ONE coherent markdown summary from several sub-answers that
-were each grounded in BigQuery results.
-
-STRICT GROUNDING RULES (read carefully — violating these is worse than a short answer):
-- You may ONLY mention entities (players, clubs, scores, dates, numbers) that
-  appear VERBATIM in the sub-answers below. Do NOT add names or stats from
-  your own knowledge, even if you are sure they are correct.
-- If a sub-answer says "no data", "not available", "not extracted", "could
-  not be retrieved", or is otherwise empty of concrete facts, DROP that
-  section entirely. Do not write a section that admits to having no data.
-- If a sub-answer lists fewer entities than the user asked for, only mention
-  the ones actually returned. Do not pad the list from memory.
-- Use short markdown sections with ## headings, one per sub-topic that
-  actually has concrete data.
-- If NONE of the sub-answers produced concrete data, reply with a single short
-  paragraph saying the warehouse did not have what was asked, and suggest the
-  user narrow the question.
-- End with a one-line italic caveat ONLY if some (not all) sub-answers were
-  empty, listing which angles are missing.
-- Keep it tight; this is for a WhatsApp/web assistant.
-
-Original user question:
-{question}
-
-Sub-question results (JSON — `usable=false` means the sub-answer had no
-concrete data and MUST be ignored):
-{sub_results}
-""".strip()
-
-
-def _decompose_summary(question: str, conversation_context: str | None = None) -> list[str]:
-    """Use the simple-tier LLM to break the question into sub-questions.
-
-    The decomposer gets the current date and the conversation context so it can
-    (a) resolve "this season" to the right year and (b) carry forward entities
-    the user already named (e.g. a lineup from a prior turn).
-    """
-    from datetime import date as _date
-    try:
-        llm = create_chat_model("simple", temperature=0, max_retries=3, timeout=30)
-        raw = llm.invoke(
-            _SUMMARY_DECOMPOSE_PROMPT.format(
-                question=question,
-                context=(conversation_context or "None")[:4000],
-                today=_date.today().isoformat(),
-            )
-        ).content or ""
-        raw = raw.strip()
-        # Strip ```json fences if present.
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        subs = json.loads(raw)
-        if isinstance(subs, list):
-            cleaned = [str(s).strip() for s in subs if str(s).strip()]
-            return cleaned[:4]
-    except Exception as exc:
-        logger.warning("summary decomposition failed: %s", exc)
-    # Fallback: a single sub-question = the original question. The bigquery
-    # agent will still get to run, just without parallel fan-out benefit.
-    return [question]
-
-
-# ── Entity allow-list scrub ─────────────────────────────────────────────────
-
-# Sentence-start / common capitalised words that should NOT be treated as
-# proper-noun evidence (otherwise every sentence starting with "The" would be
-# flagged). Domain section headings get included so headings survive.
-_SCRUB_STOPWORDS = {
-    "the", "a", "an", "this", "these", "those", "their", "they", "he", "she",
-    "it", "his", "her", "its", "and", "or", "but", "if", "when", "while",
-    "however", "note", "summary", "overview", "key", "season", "stats",
-    "statistics", "data", "players", "player", "club", "clubs", "team", "teams",
-    "match", "matches", "game", "games", "goals", "assists", "appearances",
-    "minutes", "league", "cup", "based", "here", "no", "yes", "missing",
-    "available", "retrieved", "not", "some", "all", "most", "top", "best",
-    "first", "second", "third", "last", "next", "for", "from", "with", "of",
-    "in", "on", "at", "by", "as", "to", "vs", "won", "lost", "drew", "draw",
-    "win", "wins", "loss", "losses", "draws", "points", "position", "form",
-    "starts", "starter", "substitute", "substitutes", "minutes_played",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "january", "february", "march", "april", "may", "june", "july", "august",
-    "september", "october", "november", "december",
-    # Nationality / language adjectives — frequent false positives when they
-    # start a sentence ("The top Portuguese players by goals are:").
-    "portuguese", "spanish", "english", "french", "german", "italian", "dutch",
-    "belgian", "brazilian", "argentine", "argentinian", "mexican", "american",
-    "canadian", "moroccan", "egyptian", "nigerian", "ghanaian", "senegalese",
-    "japanese", "korean", "saudi", "iranian", "uruguayan", "colombian",
-    "chilean", "ecuadorian", "peruvian", "australian", "croatian", "serbian",
-    "polish", "swiss", "austrian", "danish", "swedish", "norwegian", "scottish",
-    "irish", "welsh", "european", "african", "asian", "south", "north",
-}
-
-# Match either: a multi-word capitalised phrase (e.g. "Cristiano Ronaldo",
-# "Manchester United", "Al Hilal", "Paris Saint-Germain") OR a single
-# capitalised word of length >= 4 that could plausibly be a proper noun.
-# Allows hyphens, apostrophes, and accented characters (Léao, Félix).
-_PROPER_NOUN_RE = _re.compile(
-    r"\b([A-ZÀ-Ý][\wÀ-ÿ'\-]*"          # first capitalised word
-    r"(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'\-]*)*)",  # optional additional capitalised words
-    _re.UNICODE,
-)
-
-
-def _extract_proper_nouns(text: str) -> set[str]:
-    """Extract proper-noun phrases as lowercase strings, ignoring stopwords."""
-    found: set[str] = set()
-    for match in _PROPER_NOUN_RE.finditer(text or ""):
-        phrase = match.group(1).strip()
-        lo = phrase.lower()
-        # Single short words and pure stopwords don't count as proper nouns.
-        if " " not in phrase and (len(phrase) < 4 or lo in _SCRUB_STOPWORDS):
-            continue
-        # Multi-word phrases: drop if every token is a stopword.
-        if " " in phrase and all(tok.lower() in _SCRUB_STOPWORDS for tok in phrase.split()):
-            continue
-        found.add(lo)
-    return found
-
-
-def _scrub_unknown_entities(
-    composed: str,
-    usable_sub_answers: list[str],
-    row_samples: list[Any],
-) -> tuple[str, list[str]]:
-    """Drop sentences in the composed answer that mention a proper-noun phrase
-    not present anywhere in the grounded source material.
-
-    Returns the cleaned text + a list of dropped sentences (for logging).
-    Conservative: lower-case words and numbers pass freely; only proper-noun
-    phrases trigger checks. Headings (`##`, `-`, `*`) are inspected too, but
-    their leading markdown is preserved when re-emitting kept content.
-    """
-    if not composed:
-        return composed, []
-
-    # Build the allow-list from all usable sub-answers + raw row sample JSON.
-    allow: set[str] = set()
-    for ans in usable_sub_answers:
-        allow |= _extract_proper_nouns(ans)
-    try:
-        import json as _json
-        for rs in row_samples:
-            allow |= _extract_proper_nouns(_json.dumps(rs, ensure_ascii=False, default=str))
-    except Exception:
-        pass
-
-    # Substring-tolerant containment: "Ronaldo" in allow lets "Cristiano Ronaldo"
-    # pass even if only the surname appeared in the sources, and vice versa.
-    def _allowed(phrase: str) -> bool:
-        if phrase in allow:
-            return True
-        for known in allow:
-            if phrase in known or known in phrase:
-                return True
-        return False
-
-    kept_lines: list[str] = []
-    dropped: list[str] = []
-    for raw_line in composed.splitlines():
-        stripped = raw_line.strip()
-        # Headings, blank lines, separators, code fences: keep as-is.
-        if not stripped or stripped.startswith(("#", "```", "---", "===")):
-            kept_lines.append(raw_line)
-            continue
-
-        # Split the line into sentences. Keep markdown bullet/numbering prefix
-        # so list structure survives.
-        prefix_match = _re.match(r"^(\s*(?:[-*+]|\d+\.)\s+)", raw_line)
-        prefix = prefix_match.group(1) if prefix_match else ""
-        body = raw_line[len(prefix):] if prefix else raw_line
-
-        sentences = _re.split(r"(?<=[.!?])\s+", body.strip())
-        kept_sentences: list[str] = []
-        for sent in sentences:
-            nouns = _extract_proper_nouns(sent)
-            bad = [n for n in nouns if not _allowed(n)]
-            if bad:
-                dropped.append(sent)
-            else:
-                kept_sentences.append(sent)
-
-        if kept_sentences:
-            kept_lines.append(prefix + " ".join(kept_sentences))
-        # If every sentence on a bullet was dropped, drop the bullet entirely.
-
-    cleaned = "\n".join(kept_lines).strip()
-
-    # If the scrub left us with only headings / nothing, fall back to a short
-    # honest message rather than shipping an empty shell.
-    has_content = any(
-        line.strip() and not line.strip().startswith(("#", "```", "---", "==="))
-        for line in cleaned.splitlines()
-    )
-    if not has_content:
-        cleaned = (
-            "The data warehouse did not return enough concrete information to "
-            "summarise this. Try narrowing the question (e.g. ask about one "
-            "specific player, team, or season)."
-        )
-
-    if dropped:
-        cleaned = (
-            cleaned
-            + "\n\n*Note: parts of the draft answer were removed because they "
-              "referenced entities not present in the retrieved data.*"
-        )
-
-    return cleaned, dropped
-
-
-def run_summary_structured(
-    query: str,
-    conversation_context: str | None = None,
-) -> dict[str, Any]:
-    """Plan-then-fan-out runner for broad summary/overview questions.
-
-    Each sub-question is executed by `run_structured` in parallel threads, then a
-    single LLM call stitches the sub-answers into a coherent markdown summary.
-    """
-    import time as _time
-    from concurrent.futures import ThreadPoolExecutor
-
-    sub_questions = _decompose_summary(query, conversation_context=conversation_context)
-    logger.info("summary fan-out: %d sub-questions for %r", len(sub_questions), query[:80])
-
-    # Schema retrieval is the same expensive embedding call for every sub-question
-    # about the same entity. Compute it ONCE against the broad parent question
-    # (better topical anchor than any narrow sub-question) and reuse.
-    try:
-        from src.data.datamodel.schema_retriever import search_schema_tool as _search
-        shared_schema = _search(query, top_k=5)
-    except Exception as exc:
-        logger.warning("shared schema retrieval failed (%s); sub-questions will retrieve individually", exc)
-        shared_schema = None
-
-    t0 = _time.perf_counter()
-    sub_results: list[dict[str, Any]] = []
-    # Each sub-question is focused (one SQL angle) — small turn budget keeps the
-    # slowest parallel branch from dragging the whole summary down.
-    sub_max_turns = 6
-    with ThreadPoolExecutor(max_workers=min(len(sub_questions), 4)) as ex:
-        futures = {
-            ex.submit(
-                run_structured,
-                sq,
-                conversation_context,
-                None,
-                sub_max_turns,
-                shared_schema,
-            ): sq
-            for sq in sub_questions
-        }
-        for fut in futures:
-            sq = futures[fut]
-            try:
-                sub_results.append({"question": sq, "result": fut.result()})
-            except Exception as exc:
-                logger.exception("summary sub-question failed: %s", sq)
-                sub_results.append({
-                    "question": sq,
-                    "result": {
-                        "answer": f"(sub-question failed: {exc})",
-                        "confidence_score": 0.0,
-                        "metadata": {"error": str(exc)},
-                    },
-                })
-    fanout_sec = round(_time.perf_counter() - t0, 2)
-
-    # Hedge detection: the heuristic _confidence() returns 0.85 whenever *any*
-    # rows came back, even garbage from a discovery query. If the answer text
-    # admits to missing data, the sub-answer is NOT usable for the composer.
-    _HEDGE_PHRASES = (
-        "no data", "not available", "not extracted", "could not be retrieved",
-        "couldn't be retrieved", "were not extracted", "no results", "0 rows",
-        "no rows", "unable to retrieve", "no matching", "could not find",
-        "not found in the database", "not in the database", "missing data",
-        "data is not available", "n/a", "(sub-question failed",
-    )
-
-    def _is_usable(answer_text: str) -> bool:
-        if not answer_text or len(answer_text.strip()) < 20:
-            return False
-        lo = answer_text.lower()
-        return not any(p in lo for p in _HEDGE_PHRASES)
-
-    # Compose the final markdown answer from the sub-answers.
-    compact = []
-    for item in sub_results:
-        ans = str(item["result"].get("answer", ""))
-        usable = _is_usable(ans)
-        compact.append({
-            "sub_question": item["question"],
-            "answer": ans[:1500],
-            "usable": usable,
-            "confidence": float(item["result"].get("confidence_score", 0.0) or 0.0),
-        })
-    try:
-        # Complex tier: the composer must follow strict anti-hallucination rules
-        # (ignore unusable sub-answers, never invent entities from training data).
-        # Simple tier was too eager to "help" by padding with prior knowledge.
-        composer = create_chat_model("complex", temperature=0, max_retries=3, timeout=60)
-        composed = composer.invoke(
-            _SUMMARY_COMPOSE_PROMPT.format(
-                question=query,
-                sub_results=json.dumps(compact, ensure_ascii=False, indent=2),
-            )
-        ).content
-        final_answer = (composed or "").strip() or "No data was retrieved for this summary."
-    except Exception as exc:
-        logger.exception("summary composition failed")
-        # Concatenation fallback so we still return SOMETHING grounded.
-        final_answer = "\n\n".join(
-            f"### {item['sub_question']}\n{item['answer']}" for item in sub_results
-        ) or f"Summary composition failed: {exc}"
-
-    # Entity allow-list scrub: hard guarantee that the composer didn't smuggle in
-    # entity names from its training data. We extract proper-noun phrases that
-    # appear in the (usable) sub-answers + row samples, then drop any sentence
-    # in the composed markdown that mentions a proper-noun phrase NOT in that
-    # allow-list. Conservative: only proper-noun phrases (2+ capitalised words,
-    # or a long single capitalised word). Numbers and lower-case words pass.
-    try:
-        final_answer, dropped = _scrub_unknown_entities(
-            final_answer,
-            usable_sub_answers=[c["answer"] for c in compact if c["usable"]],
-            row_samples=[item["result"].get("metadata", {}).get("row_samples") or []
-                         for item in sub_results],
-        )
-        if dropped:
-            logger.warning("entity scrub dropped %d sentence(s): %s",
-                           len(dropped), dropped[:3])
-    except Exception as exc:
-        logger.warning("entity scrub failed (%s); returning raw composed answer", exc)
-        dropped = []
-
-    # Merge metadata across sub-runs.
-    merged_sql: list[str] = []
-    merged_rows: list[dict] = []
-    merged_traces: list[Any] = []
-    effective_confidences: list[float] = []
-    for item, c in zip(sub_results, compact):
-        meta = (item["result"].get("metadata") or {})
-        merged_sql.extend(meta.get("sql_executed") or [])
-        merged_rows.extend(meta.get("row_samples") or [])
-        merged_traces.append({"sub_question": item["question"], "trace": meta.get("trace")})
-        raw_conf = float(item["result"].get("confidence_score", 0.0) or 0.0)
-        # Hedged / empty sub-answers get capped at 0.3 regardless of how many
-        # rows the heuristic counted — those rows did not answer the question.
-        effective_confidences.append(raw_conf if c["usable"] else min(raw_conf, 0.3))
-
-    n_usable = sum(1 for c in compact if c["usable"])
-    if not effective_confidences:
-        avg_conf = 0.3
-    elif n_usable == 0:
-        # Nothing answered the question — be honest with the user.
-        avg_conf = 0.25
-    else:
-        avg_conf = round(sum(effective_confidences) / len(effective_confidences), 2)
-    reason = (
-        f"Summary fan-out: {n_usable}/{len(sub_results)} sub-questions returned "
-        f"concrete data (others were empty or hedged)."
-    )
-
-    return {
-        "answer": final_answer,
-        "confidence_score": avg_conf,
-        "confidence_reason": reason,
-        "metadata": {
-            "data_source": "bigquery",
-            "mode": "summary_fanout",
-            "fanout_sec": fanout_sec,
-            "sub_questions": sub_questions,
-            "sql_executed": merged_sql,
-            "row_samples": merged_rows[:15],
-            "sub_traces": merged_traces,
-            "scrubbed_sentences": dropped,
-        },
-    }
 
 
 if __name__ == "__main__":
