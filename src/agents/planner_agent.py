@@ -1,12 +1,13 @@
 """Planner Agent — single-call router for the football assistant.
 
-One simple-tier LLM call with structured output decides:
+One LLM call (gpt-4o-mini with structured output) decides:
   - which specialist(s) to invoke (1-2)
   - the topic of the request (used for memory and confidence)
   - whether the request needs the LLM verifier afterwards
 
-Routing is a constrained classification problem. We save the complex tier for
-quality-critical SQL generation and verification.
+Routing is a constrained classification problem — gpt-4o-mini handles it as well
+as gpt-4o once we lock the schema with Pydantic. We save the larger model for
+the quality-critical SQL generation step.
 
 Specialist set:
   bigquery | prediction | news | sentiment | rules | chat
@@ -16,10 +17,11 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from src.agents.llm_config import create_chat_model
 
+_MODEL = "gpt-4o-mini"  # routing is a 6-way classification; mini is plenty when schema-constrained
 _llm = None  # ChatOpenAI bound with structured output
 
 
@@ -31,14 +33,13 @@ class _PlanSchema(BaseModel):
     primary_agent: AgentName = Field(..., description="The agent whose answer drives the reply.")
     topic: str = Field(default="", description="Short noun phrase summarising the request.")
     needs_verifier: bool = Field(default=False, description="Set true when bigquery is selected or numbers/lists are requested.")
-    is_summary: bool = Field(default=False, description="True ONLY for broad 'summarise / overview / season recap / tell me about' style questions that need multiple SQL angles.")
     reason: str = Field(default="", description="One short sentence explaining the routing.")
 
 
 def _get_llm():
     global _llm
     if _llm is None:
-        base = create_chat_model("simple", temperature=0, max_retries=6, timeout=60)
+        base = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
         _llm = base.with_structured_output(_PlanSchema)
     return _llm
 
@@ -62,12 +63,9 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 
 ## Rules
 - Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
-- Words like "squad", "roster", "lineup", "players", "starting XI" asking WHO is on a team → `bigquery` (player list lives in the warehouse). Route to `rules` ONLY when the question is about the *regulation* itself (e.g. "how many players per squad", "squad submission deadline", "squad size limit").
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
-- Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
-- Set `is_summary = true` ONLY for BROAD overview questions about a team/player/competition that span multiple angles (e.g. "summarise FC Porto 2025-2026 season", "give me an overview of Mbappé this year", "how was Portugal's qualification campaign"). Single-fact and ranking questions are NOT summaries.
-- When `is_summary = true`, set `needs_verifier = false` (the summary path verifies each sub-question internally).
+- Set `needs_verifier = true` whenever `bigquery` is selected, OR when the request asks for specific numbers/lists.
 - `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
 
 ## Return schema (JSON only, no prose)
@@ -76,7 +74,6 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
   "primary_agent": "bigquery",
   "topic": "...",
   "needs_verifier": true,
-  "is_summary": false,
   "reason": "short explanation"
 }}
 
@@ -92,8 +89,9 @@ def _fallback_plan(query: str) -> dict[str, Any]:
     q = (query or "").lower()
     if any(t in q for t in ("hello", "hi ", "how are you", "thanks", "thank you")):
         agents = ["chat"]
-    elif any(t in q for t in ("rule", "regulation", "format", "protest", "disciplinary",
-                              "eligibility", "doping", "award", "trophy")):
+    elif any(t in q for t in ("rule", "regulation", "format", "yellow card", "red card",
+                              "penalty", "extra time", "protest", "disciplinary",
+                              "eligibility", "squad", "kit", "doping", "award", "trophy")):
         agents = ["rules"]
     elif any(t in q for t in ("news", "headline", "rumour", "transfer", "injury")):
         agents = ["news"]
@@ -103,18 +101,11 @@ def _fallback_plan(query: str) -> dict[str, Any]:
         agents = ["prediction", "bigquery"]
     else:
         agents = ["bigquery"]
-    is_summary = any(
-        t in q for t in (
-            "summary", "summarise", "summarize", "overview", "recap",
-            "tell me about", "how was", "season ", "campaign",
-        )
-    ) and "bigquery" in agents
     return {
         "agents": agents,
         "primary_agent": agents[0],
         "topic": "",
-        "needs_verifier": ("bigquery" in agents) and not is_summary,
-        "is_summary": is_summary,
+        "needs_verifier": "bigquery" in agents,
         "reason": "Fallback planner (LLM unavailable or invalid JSON).",
     }
 
@@ -133,17 +124,11 @@ def plan_response(
         if not agents:
             raise ValueError("planner returned no valid agents")
         primary = plan.primary_agent if plan.primary_agent in agents else agents[0]
-        is_summary = bool(plan.is_summary) and "bigquery" in agents
-        # Summary path verifies each sub-question internally — skip the global verifier.
-        needs_verifier = (
-            False if is_summary else bool(plan.needs_verifier or "bigquery" in agents)
-        )
         return {
             "agents": agents,
             "primary_agent": primary,
             "topic": plan.topic or "",
-            "needs_verifier": needs_verifier,
-            "is_summary": is_summary,
+            "needs_verifier": bool(plan.needs_verifier or "bigquery" in agents),
             "reason": plan.reason or "",
         }
     except Exception:
