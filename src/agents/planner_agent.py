@@ -31,6 +31,7 @@ class _PlanSchema(BaseModel):
     primary_agent: AgentName = Field(..., description="The agent whose answer drives the reply.")
     topic: str = Field(default="", description="Short noun phrase summarising the request.")
     needs_verifier: bool = Field(default=False, description="Set true when bigquery is selected or numbers/lists are requested.")
+    is_summary: bool = Field(default=False, description="True ONLY for broad 'summarise / overview / season recap / tell me about' style questions that need multiple SQL angles.")
     reason: str = Field(default="", description="One short sentence explaining the routing.")
 
 
@@ -65,6 +66,8 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
 - Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
+- Set `is_summary = true` ONLY for BROAD overview questions about a team/player/competition that span multiple angles (e.g. "summarise FC Porto 2025-2026 season", "give me an overview of Mbappé this year", "how was Portugal's qualification campaign"). Single-fact and ranking questions are NOT summaries.
+- When `is_summary = true`, set `needs_verifier = false` (the summary path verifies each sub-question internally).
 - `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
 
 ## Return schema (JSON only, no prose)
@@ -73,6 +76,7 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
   "primary_agent": "bigquery",
   "topic": "...",
   "needs_verifier": true,
+  "is_summary": false,
   "reason": "short explanation"
 }}
 
@@ -99,11 +103,18 @@ def _fallback_plan(query: str) -> dict[str, Any]:
         agents = ["prediction", "bigquery"]
     else:
         agents = ["bigquery"]
+    is_summary = any(
+        t in q for t in (
+            "summary", "summarise", "summarize", "overview", "recap",
+            "tell me about", "how was", "season ", "campaign",
+        )
+    ) and "bigquery" in agents
     return {
         "agents": agents,
         "primary_agent": agents[0],
         "topic": "",
-        "needs_verifier": "bigquery" in agents,
+        "needs_verifier": ("bigquery" in agents) and not is_summary,
+        "is_summary": is_summary,
         "reason": "Fallback planner (LLM unavailable or invalid JSON).",
     }
 
@@ -122,11 +133,17 @@ def plan_response(
         if not agents:
             raise ValueError("planner returned no valid agents")
         primary = plan.primary_agent if plan.primary_agent in agents else agents[0]
+        is_summary = bool(plan.is_summary) and "bigquery" in agents
+        # Summary path verifies each sub-question internally — skip the global verifier.
+        needs_verifier = (
+            False if is_summary else bool(plan.needs_verifier or "bigquery" in agents)
+        )
         return {
             "agents": agents,
             "primary_agent": primary,
             "topic": plan.topic or "",
-            "needs_verifier": bool(plan.needs_verifier or "bigquery" in agents),
+            "needs_verifier": needs_verifier,
+            "is_summary": is_summary,
             "reason": plan.reason or "",
         }
     except Exception:
