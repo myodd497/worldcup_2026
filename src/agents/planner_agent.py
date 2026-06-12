@@ -1,13 +1,12 @@
 """Planner Agent — single-call router for the football assistant.
 
-One LLM call (gpt-4o-mini with structured output) decides:
+One simple-tier LLM call with structured output decides:
   - which specialist(s) to invoke (1-2)
   - the topic of the request (used for memory and confidence)
   - whether the request needs the LLM verifier afterwards
 
-Routing is a constrained classification problem — gpt-4o-mini handles it as well
-as gpt-4o once we lock the schema with Pydantic. We save the larger model for
-the quality-critical SQL generation step.
+Routing is a constrained classification problem. We save the complex tier for
+quality-critical SQL generation and verification.
 
 Specialist set:
   bigquery | prediction | news | sentiment | rules | chat
@@ -17,11 +16,10 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from src.agents.llm_config import create_chat_model
 
-_MODEL = "gpt-4o-mini"  # routing is a 6-way classification; mini is plenty when schema-constrained
 _llm = None  # ChatOpenAI bound with structured output
 
 
@@ -39,7 +37,7 @@ class _PlanSchema(BaseModel):
 def _get_llm():
     global _llm
     if _llm is None:
-        base = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
+        base = create_chat_model("simple", temperature=0, max_retries=6, timeout=60)
         _llm = base.with_structured_output(_PlanSchema)
     return _llm
 
@@ -63,9 +61,10 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 
 ## Rules
 - Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
+- Words like "squad", "roster", "lineup", "players", "starting XI" asking WHO is on a team → `bigquery` (player list lives in the warehouse). Route to `rules` ONLY when the question is about the *regulation* itself (e.g. "how many players per squad", "squad submission deadline", "squad size limit").
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
-- Set `needs_verifier = true` whenever `bigquery` is selected, OR when the request asks for specific numbers/lists.
+- Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
 - `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
 
 ## Return schema (JSON only, no prose)
@@ -92,6 +91,8 @@ def _fallback_plan(query: str) -> dict[str, Any]:
     elif any(t in q for t in ("rule", "regulation", "format", "yellow card", "red card",
                               "penalty", "extra time", "protest", "disciplinary",
                               "eligibility", "squad", "kit", "doping", "award", "trophy")):
+    elif any(t in q for t in ("rule", "regulation", "format", "protest", "disciplinary",
+                              "eligibility", "doping", "award", "trophy")):
         agents = ["rules"]
     elif any(t in q for t in ("news", "headline", "rumour", "transfer", "injury")):
         agents = ["news"]
