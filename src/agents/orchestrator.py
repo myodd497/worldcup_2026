@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import operator
+from datetime import datetime, timezone
 from typing import Annotated, Any, TypedDict
 
 from langchain_openai import ChatOpenAI
@@ -24,7 +25,8 @@ from langgraph.graph import END, StateGraph
 
 from src.agents.conversation_memory import ConversationMemory
 from src.agents.llm_config import create_chat_model
-from src.agents.workflow_logger import get_tracker
+from src.agents.llm_usage_tracker import get_usage_summary, reset_usage_tracker
+from src.agents.workflow_logger import get_tracker, reset_tracker
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -383,6 +385,9 @@ async def run_orchestrator(
     conversation_history: list[dict[str, str]] | None = None,
     use_cache: bool = True,
 ) -> str:
+    request_ts = datetime.now(timezone.utc)
+    reset_tracker()
+    reset_usage_tracker()
     memory = ConversationMemory.from_messages(conversation_history)
     memory.append_user(user_message)
     context = memory.context_block()
@@ -391,6 +396,23 @@ async def run_orchestrator(
         from src.agents.answer_cache import lookup as _cache_lookup
         cached = _cache_lookup(user_message, context=context)
         if cached:
+            try:
+                from src.agents.chat_observability import log_chat_interaction
+
+                log_chat_interaction(
+                    user_id=user_id,
+                    conversation_id=user_id,
+                    question_text=user_message,
+                    final_answer_text=cached,
+                    state=None,
+                    workflow_steps=[],
+                    usage_summary=get_usage_summary(),
+                    request_ts=request_ts,
+                    response_ts=datetime.now(timezone.utc),
+                    cache_hit=True,
+                )
+            except Exception:
+                pass
             return cached
 
     state: OrchestratorState = {
@@ -413,6 +435,24 @@ async def run_orchestrator(
     out = await _graph.ainvoke(state)
     reply = out["final_reply"]
 
+    try:
+        from src.agents.chat_observability import log_chat_interaction
+
+        log_chat_interaction(
+            user_id=user_id,
+            conversation_id=user_id,
+            question_text=user_message,
+            final_answer_text=reply,
+            state=dict(out),
+            workflow_steps=list(get_tracker().steps),
+            usage_summary=get_usage_summary(),
+            request_ts=request_ts,
+            response_ts=datetime.now(timezone.utc),
+            cache_hit=False,
+        )
+    except Exception:
+        pass
+
     if use_cache and reply and float(out.get("confidence_score") or 0) >= 0.7:
         # Only cache answers we're confident in.
         from src.agents.answer_cache import store as _cache_store
@@ -431,6 +471,7 @@ async def run_orchestrator_full(
     Useful for eval harnesses and observability — exposes the SQL trace,
     verifier verdict, selected agents, and confidence.
     """
+    reset_tracker()
     memory = ConversationMemory.from_messages(conversation_history)
     memory.append_user(user_message)
     state: OrchestratorState = {
