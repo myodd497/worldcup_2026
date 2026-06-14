@@ -2,11 +2,41 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
 
+from src.agents.llm_usage_tracker import capture_usage_from_response
+
 LLMTier = Literal["simple", "complex"]
+
+
+class _TrackedChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that records token/cost usage after every call."""
+
+    _default_model: str = ""
+
+    def invoke(self, *args: Any, **kwargs: Any) -> BaseMessage:
+        response = super().invoke(*args, **kwargs)
+        capture_usage_from_response(response, default_model=self._default_model)
+        return response
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> BaseMessage:
+        response = await super().ainvoke(*args, **kwargs)
+        capture_usage_from_response(response, default_model=self._default_model)
+        return response
+
+    def generate(self, *args: Any, **kwargs: Any) -> LLMResult:
+        result = super().generate(*args, **kwargs)
+        capture_usage_from_response(result, default_model=self._default_model)
+        return result
+
+    async def agenerate(self, *args: Any, **kwargs: Any) -> LLMResult:
+        result = await super().agenerate(*args, **kwargs)
+        capture_usage_from_response(result, default_model=self._default_model)
+        return result
 
 
 def _provider() -> str:
@@ -71,4 +101,6 @@ def create_chat_model(
             f"LLM_PROVIDER must be either 'deepseek' or 'openai' (got {provider!r})"
         )
 
-    return ChatOpenAI(**params)
+    client = _TrackedChatOpenAI(**params)
+    client._default_model = model
+    return client
