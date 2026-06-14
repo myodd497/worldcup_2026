@@ -1,14 +1,10 @@
 """Planner Agent — single-call router for the football assistant.
-
-One LLM call (gpt-4o-mini with structured output) decides:
+One simple-tier LLM call with structured output decides:
   - which specialist(s) to invoke (1-2)
   - the topic of the request (used for memory and confidence)
   - whether the request needs the LLM verifier afterwards
-
-Routing is a constrained classification problem — gpt-4o-mini handles it as well
-as gpt-4o once we lock the schema with Pydantic. We save the larger model for
-the quality-critical SQL generation step.
-
+Routing is a constrained classification problem. We save the complex tier for
+quality-critical SQL generation and verification.
 Specialist set:
   bigquery | prediction | news | sentiment | rules | chat
 """
@@ -17,11 +13,9 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-
-_MODEL = "gpt-4o-mini"  # routing is a 6-way classification; mini is plenty when schema-constrained
+from src.agents.llm_config import create_chat_model
 _llm = None  # ChatOpenAI bound with structured output
 
 
@@ -39,7 +33,7 @@ class _PlanSchema(BaseModel):
 def _get_llm():
     global _llm
     if _llm is None:
-        base = ChatOpenAI(model=_MODEL, temperature=0, max_retries=6, timeout=60)
+        base = create_chat_model("simple", temperature=0, max_retries=6, timeout=60)
         _llm = base.with_structured_output(_PlanSchema)
     return _llm
 
@@ -47,34 +41,10 @@ def _get_llm():
 AVAILABLE_AGENTS = ["bigquery", "prediction", "news", "sentiment", "rules", "chat"]
 DATA_AGENTS = {"bigquery", "prediction"}
 
-_CHAT_KEYWORDS = ("hello", "hi ", "how are you", "thanks", "thank you")
-_RULES_KEYWORDS = (
-    "rule",
-    "regulation",
-    "format",
-    "yellow card",
-    "red card",
-    "penalty",
-    "extra time",
-    "protest",
-    "disciplinary",
-    "eligibility",
-    "squad",
-    "kit",
-    "doping",
-    "award",
-    "trophy",
-)
-_NEWS_KEYWORDS = ("news", "headline", "rumour", "transfer", "injury")
-_SENTIMENT_KEYWORDS = ("sentiment", "social", "fan reaction", "fans think")
-_PREDICTION_KEYWORDS = ("predict", "prediction", "probability", "odds", "who will win", "forecast")
-
 
 _PROMPT = """\
 You are the routing brain for a football assistant about the FIFA World Cup 2026 and football history.
-
 Decide which specialist(s) should handle the request. Return ONLY valid JSON.
-
 ## Specialists
 - bigquery   — ALL structured football data: teams, players, fixtures, results, standings, stats, history, head-to-head, form, schedule, comparisons, analytics. This is the source of truth for any factual question.
 - prediction — outcome probabilities for an UPCOMING match the user names explicitly (e.g. "predict Portugal vs Morocco").
@@ -82,14 +52,13 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 - sentiment  — fan/social-media reaction.
 - rules      — FIFA WC2026 official regulations (cards, eligibility, format, protests, awards…).
 - chat       — greetings, generic conversation, or anything that clearly needs no data.
-
 ## Rules
 - Default to `bigquery` for anything that requires a fact, a number, a name, a comparison, a ranking, or a date.
+- Words like "squad", "roster", "lineup", "players", "starting XI" asking WHO is on a team → `bigquery` (player list lives in the warehouse). Route to `rules` ONLY when the question is about the *regulation* itself (e.g. "how many players per squad", "squad submission deadline", "squad size limit").
 - Use `prediction` ONLY when the user explicitly asks for a forecast/probability of a specific upcoming match. In that case include BOTH `prediction` and `bigquery`.
 - Never select more than 2 agents.
-- Set `needs_verifier = true` whenever `bigquery` is selected, OR when the request asks for specific numbers/lists.
+- Set `needs_verifier = true` ONLY when the request asks for specific numbers, rankings, multi-row lists, or comparisons that can be wrong subtly. Simple lookups (next match, last result, single fact) do NOT need the verifier.
 - `topic` is one short noun phrase (e.g. "Portugal form", "WC2026 top scorers", "rules: yellow cards").
-
 ## Return schema (JSON only, no prose)
 {{
   "agents": ["bigquery"],
@@ -98,10 +67,8 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
   "needs_verifier": true,
   "reason": "short explanation"
 }}
-
 ## Conversation context (earlier turns + remembered entities)
 {context}
-
 ## User request
 {message}
 """.strip()
@@ -109,15 +76,20 @@ Decide which specialist(s) should handle the request. Return ONLY valid JSON.
 
 def _fallback_plan(query: str) -> dict[str, Any]:
     q = (query or "").lower()
-    if any(t in q for t in _CHAT_KEYWORDS):
+    if any(t in q for t in ("hello", "hi ", "how are you", "thanks", "thank you")):
         agents = ["chat"]
-    elif any(t in q for t in _RULES_KEYWORDS):
+    elif any(t in q for t in ("rule", "regulation", "format", "yellow card", "red card",
+                              "penalty", "extra time", "protest", "disciplinary",
+                              "eligibility", "squad", "kit", "doping", "award", "trophy")):
         agents = ["rules"]
-    elif any(t in q for t in _NEWS_KEYWORDS):
+    elif any(t in q for t in ("rule", "regulation", "format", "protest", "disciplinary",
+                              "eligibility", "doping", "award", "trophy")):
+        agents = ["rules"]
+    elif any(t in q for t in ("news", "headline", "rumour", "transfer", "injury")):
         agents = ["news"]
-    elif any(t in q for t in _SENTIMENT_KEYWORDS):
+    elif any(t in q for t in ("sentiment", "social", "fan reaction", "fans think")):
         agents = ["sentiment"]
-    elif any(t in q for t in _PREDICTION_KEYWORDS):
+    elif any(t in q for t in ("predict", "prediction", "probability", "odds", "who will win", "forecast")):
         agents = ["prediction", "bigquery"]
     else:
         agents = ["bigquery"]
