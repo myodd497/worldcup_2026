@@ -1166,6 +1166,294 @@ CROWD_ROAR_HTML = """
 
 
 # ---------------------------------------------------------------------------
+# Rotating "Thinking: <football fact>" spinner label
+# ---------------------------------------------------------------------------
+# A curated list of well-known, verified football facts. Heavily weighted
+# toward the last decade (2014–2025). Rotated client-side every 3 seconds
+# inside any Streamlit spinner whose label starts with "Thinking" — purely
+# JS/CSS, no extra backend or network cost.
+
+_FOOTBALL_FACTS: list[str] = [
+    # ── World Cup (recent) ───────────────────────────────────────────────
+    "Argentina won the 2022 World Cup, beating France 4-2 on penalties.",
+    "Lionel Messi finally lifted the World Cup in 2022 at age 35.",
+    "France won the 2018 World Cup in Russia, beating Croatia 4-2.",
+    "Kylian Mbappé scored a hat-trick in the 2022 World Cup final and still lost.",
+    "Germany won the 2014 World Cup in Brazil, beating Argentina 1-0.",
+    "Mario Götze scored the winning goal in the 2014 World Cup final.",
+    "Brazil lost 7-1 to Germany in the 2014 World Cup semi-final at home.",
+    "Morocco became the first African team to reach a World Cup semi-final in 2022.",
+    "Saudi Arabia stunned Argentina 2-1 in their 2022 World Cup opener.",
+    "Japan beat both Germany and Spain in the 2022 World Cup group stage.",
+    "Croatia reached the 2018 World Cup final, losing 4-2 to France.",
+    "Luka Modrić won the 2018 World Cup Golden Ball.",
+    "James Rodríguez was the 2014 World Cup top scorer with 6 goals.",
+    "Harry Kane won the 2018 World Cup Golden Boot with 6 goals.",
+    "Mbappé won the 2022 World Cup Golden Boot with 8 goals.",
+    "Emiliano Martínez was named best goalkeeper at the 2022 World Cup.",
+    "The 2026 World Cup will be the first hosted by three countries: USA, Canada, Mexico.",
+    "The 2026 World Cup will be the first with 48 teams.",
+    "The 2022 World Cup in Qatar was the first held in winter.",
+    "VAR was first used at a World Cup in Russia 2018.",
+    # ── Champions League (recent) ────────────────────────────────────────
+    "Real Madrid won the Champions League in 2014, 2016, 2017, 2018, 2022, and 2024.",
+    "Real Madrid have won 15 European Cups — more than any other club.",
+    "Real Madrid won three Champions Leagues in a row (2016, 2017, 2018).",
+    "Manchester City won their first Champions League in 2023.",
+    "Liverpool won the Champions League in 2019, beating Tottenham 2-0.",
+    "Liverpool came back from 3-0 down to beat Barcelona 4-0 in the 2019 semi-final.",
+    "Bayern Munich won the 2020 Champions League with a 1-0 final vs PSG.",
+    "Chelsea won the 2021 Champions League, beating Manchester City 1-0.",
+    "Karim Benzema won the 2022 Ballon d'Or after carrying Real Madrid to the title.",
+    "Rodrygo scored two stoppage-time goals to knock out Man City in 2022.",
+    "Real Madrid eliminated PSG, Chelsea, City, and Liverpool to win the 2022 UCL.",
+    "Vinícius Júnior scored the winner in the 2022 Champions League final.",
+    "Karim Benzema scored a hat-trick at the Bernabéu vs PSG in 2022.",
+    "Cristiano Ronaldo is the all-time top scorer in Champions League history.",
+    "Lionel Messi is second on the all-time Champions League scoring list.",
+    "Real Madrid's 2023/24 Champions League win was Carlo Ancelotti's 5th as a coach.",
+    # ── Messi & Ronaldo era ──────────────────────────────────────────────
+    "Lionel Messi has won the Ballon d'Or 8 times — more than anyone else.",
+    "Cristiano Ronaldo has won the Ballon d'Or 5 times.",
+    "Messi scored 91 goals in a calendar year (2012) — still a world record.",
+    "Cristiano Ronaldo is the all-time top scorer in men's international football.",
+    "Ronaldo scored his 900th career goal in 2024.",
+    "Messi joined Inter Miami in 2023 after leaving PSG.",
+    "Messi won the Leagues Cup with Inter Miami in his first tournament.",
+    "Cristiano Ronaldo joined Al-Nassr in January 2023.",
+    "Ronaldo left Manchester United in November 2022 after the Piers Morgan interview.",
+    "Messi left Barcelona in 2021 due to La Liga's salary cap rules.",
+    "Cristiano Ronaldo scored 5 goals in a single Champions League match for Real Madrid.",
+    "Messi scored 5 goals in a Champions League match vs Bayer Leverkusen in 2012.",
+    "Messi has the record for most goals at a single club: 672 for Barcelona.",
+    "Cristiano Ronaldo is the only player to score in five different World Cups.",
+    "Messi played 1000+ career club games.",
+    # ── Euros & Copa América ────────────────────────────────────────────
+    "Spain won Euro 2024, beating England 2-1 in the final.",
+    "Italy won Euro 2020, beating England on penalties at Wembley.",
+    "Portugal won Euro 2016 despite losing Ronaldo to injury in the final.",
+    "Éder scored the Euro 2016 winning goal for Portugal vs France.",
+    "Spain's Lamine Yamal became the youngest scorer in Euros history in 2024 at 16.",
+    "Cody Gakpo and Dani Olmo shared the Euro 2024 Golden Boot with 3 goals.",
+    "Argentina won the 2021 Copa América — Messi's first international trophy.",
+    "Argentina won the 2024 Copa América, beating Colombia 1-0.",
+    "Lautaro Martínez was the 2024 Copa América top scorer with 5 goals.",
+    "Spain has now won Euro 2008, 2012, and 2024.",
+    "Italy missed the 2018 AND 2022 World Cups despite winning Euro 2020.",
+    "Greece's Euro 2004 win is still considered the biggest Euros shock.",
+    # ── Premier League (recent) ─────────────────────────────────────────
+    "Manchester City have won 6 of the last 7 Premier League titles.",
+    "City won four Premier League titles in a row (2021–2024) — a league first.",
+    "Leicester City won the Premier League in 2016 at 5000-1 pre-season odds.",
+    "Liverpool ended their 30-year league wait by winning the 2019/20 Premier League.",
+    "Manchester City completed the treble in 2022/23: PL, FA Cup, Champions League.",
+    "Erling Haaland scored 36 league goals in his debut Premier League season.",
+    "Mohamed Salah scored 32 league goals in 2017/18 — a 38-game PL record.",
+    "Harry Kane joined Bayern Munich in 2023 for around €100m.",
+    "Pep Guardiola has managed Man City since 2016.",
+    "Jürgen Klopp left Liverpool in May 2024 after almost 9 years.",
+    "Arne Slot replaced Klopp at Liverpool in 2024.",
+    "Mikel Arteta took over Arsenal in December 2019.",
+    "Erik ten Hag was sacked by Manchester United in October 2024.",
+    "Newcastle were bought by a Saudi-led consortium in October 2021.",
+    "Roman Abramovich sold Chelsea to Todd Boehly in 2022 due to UK sanctions.",
+    "Chelsea spent over £1 billion on transfers under Boehly in 18 months.",
+    "Declan Rice joined Arsenal from West Ham for £105m in 2023.",
+    "Jack Grealish joined Man City for £100m in 2021 — first English £100m player.",
+    "VAR was introduced to the Premier League in the 2019/20 season.",
+    # ── La Liga & big transfers ─────────────────────────────────────────
+    "Real Madrid won La Liga in 2024 with five games to spare.",
+    "Jude Bellingham scored 19 La Liga goals in his debut Real Madrid season.",
+    "Kylian Mbappé joined Real Madrid on a free transfer in summer 2024.",
+    "Neymar's €222m move from Barcelona to PSG in 2017 is still a world record.",
+    "Mbappé joined PSG from Monaco for €180m in 2018.",
+    "Neymar joined Al-Hilal from PSG in 2023.",
+    "Barcelona suffered a historic 8-2 defeat to Bayern Munich in 2020.",
+    "Sergio Ramos left Real Madrid in 2021 after 16 years at the club.",
+    "Carlo Ancelotti returned to Real Madrid in 2021 for a second spell.",
+    "Real Madrid signed Eduardo Camavinga, Tchouameni, Bellingham, and Mbappé in 4 years.",
+    # ── Other leagues & cups ─────────────────────────────────────────────
+    "Bayer Leverkusen won their first-ever Bundesliga title in 2024 — unbeaten.",
+    "Xabi Alonso led Leverkusen to that unbeaten Bundesliga title in his first full season.",
+    "Bayern Munich's 11-year Bundesliga title streak ended in 2024.",
+    "Napoli won the 2022/23 Serie A — their first title since Maradona in 1990.",
+    "Inter Milan won Serie A in 2024 with five games to spare.",
+    "Atalanta won the 2024 Europa League — their first major European trophy.",
+    "PSG have dominated Ligue 1, winning 11 titles since 2013.",
+    "Boca Juniors and River Plate met in the Copa Libertadores final in 2018.",
+    "The 2018 Libertadores final second leg was played at the Bernabéu after fan violence.",
+    "Flamengo won the Copa Libertadores in 2019 and 2022.",
+    # ── Records & individual feats ──────────────────────────────────────
+    "Erling Haaland scored 5 goals in a Champions League match vs RB Leipzig in 2023.",
+    "Robert Lewandowski broke Gerd Müller's Bundesliga single-season record with 41 goals (2021).",
+    "Karim Benzema scored 44 goals for Real Madrid in 2021/22.",
+    "Cristiano Ronaldo became the first player to score 100 international goals (UEFA) in 2020.",
+    "Iker Casillas won the World Cup, two Euros, and three Champions Leagues.",
+    "Sergio Busquets won every major trophy at club and international level.",
+    "Manuel Neuer redefined the sweeper-keeper role at Bayern and Germany.",
+    "Thiago Silva is still playing top-level football well into his late 30s.",
+    "Luka Modrić won the 2018 Ballon d'Or, ending the Messi-Ronaldo duopoly.",
+    "Rodri won the 2024 Ballon d'Or after Spain's Euro win and City's PL title.",
+    "Aitana Bonmatí won the 2023 and 2024 women's Ballon d'Or.",
+    "Alexia Putellas won back-to-back Ballons d'Or in 2021 and 2022.",
+    # ── Women's football ────────────────────────────────────────────────
+    "Spain won the 2023 Women's World Cup, beating England 1-0.",
+    "USA won the 2015 and 2019 Women's World Cups.",
+    "Megan Rapinoe was the 2019 Women's World Cup Golden Ball winner.",
+    "England won Euro 2022, beating Germany 2-1 at Wembley.",
+    "Chloe Kelly scored the Euro 2022 extra-time winner for England.",
+    "The 2023 Women's World Cup was co-hosted by Australia and New Zealand.",
+    "Sam Kerr is Australia's all-time top scorer in international football.",
+    "Marta has scored at five different Women's World Cups.",
+    "Barcelona Femení won three of the last four Women's Champions Leagues.",
+    "Aitana Bonmatí scored the only goal in Spain's 2023 World Cup final win.",
+    # ── Historic / older facts ──────────────────────────────────────────
+    "Brazil have won the World Cup five times — more than any other nation.",
+    "Pelé is the only player to win three World Cups (1958, 1962, 1970).",
+    "Diego Maradona's 'Hand of God' goal came vs England in the 1986 World Cup.",
+    "Maradona then scored the 'Goal of the Century' four minutes later.",
+    "The 1950 'Maracanazo' saw Uruguay beat Brazil 2-1 in the World Cup final.",
+    "Germany's 1954 'Miracle of Bern' upset Hungary's mighty Magical Magyars.",
+    "Italy won the World Cup four times (1934, 1938, 1982, 2006).",
+    "France's Zinedine Zidane was sent off in his last-ever match — the 2006 final.",
+    "Spain won their first World Cup in 2010 with Andrés Iniesta's extra-time goal.",
+    "AC Milan went 58 league matches unbeaten between 1991 and 1993.",
+    "Arsenal's 'Invincibles' went the entire 2003/04 Premier League season unbeaten.",
+    "Sir Alex Ferguson won 13 Premier League titles with Manchester United.",
+    "José Mourinho went 9 years unbeaten at home in league play.",
+    "Johan Cruyff revolutionised football as a player and coach.",
+    "The 'Cruyff Turn' was invented at the 1974 World Cup.",
+    "Pep Guardiola's Barcelona won 14 of 19 possible trophies between 2008–2012.",
+    "Liverpool's 'miracle of Istanbul' in 2005: came back from 3-0 down vs AC Milan to win on penalties.",
+    "Manchester United won the Premier League, FA Cup, and Champions League treble in 1999.",
+    "Barcelona did the sextuple in 2009 under Guardiola.",
+    "Bayern Munich did the sextuple in 2020 under Hansi Flick.",
+    # ── Tactical / quirky facts ─────────────────────────────────────────
+    "A football match is 90 minutes long, plus stoppage time.",
+    "The pitch can be 100–110m long and 64–75m wide for international games.",
+    "Goalkeepers are the only players allowed to handle the ball in open play.",
+    "A red card means immediate ejection — no substitute allowed.",
+    "VAR can only review goals, penalties, red cards, and mistaken identity.",
+    "The offside rule was modified in 2005 to be 'active vs passive.'",
+    "Five substitutions per match became permanent post-COVID in most competitions.",
+    "Concussion substitutes were introduced in 2020.",
+    "The Premier League's record transfer is Enzo Fernández at £107m (2023).",
+    "Real Madrid have never been relegated from La Liga.",
+    "Athletic Bilbao only sign Basque players and have never been relegated.",
+    # ── Notable goalkeepers ─────────────────────────────────────────────
+    "Thibaut Courtois won the 2022 UCL final almost single-handedly vs Liverpool.",
+    "Alisson Becker scored a header for Liverpool vs West Brom in 2021.",
+    "Ederson set up multiple goals from his own box for Manchester City.",
+    "Gianluigi Donnarumma was Euro 2020 Player of the Tournament at age 22.",
+    "Emiliano Martínez saved a penalty in the last minute of extra time in the 2022 WC final.",
+    "Yashin (1963) is the only goalkeeper to win the Ballon d'Or.",
+    # ── Stadiums & atmosphere ───────────────────────────────────────────
+    "Camp Nou's capacity is 99,354 — Europe's largest club stadium.",
+    "Wembley Stadium has hosted three Champions League finals (2011, 2013, 2024).",
+    "Anfield's 'You'll Never Walk Alone' is one of football's most iconic moments.",
+    "El Clásico is Real Madrid vs Barcelona — football's biggest club rivalry.",
+    "The Old Firm derby (Celtic vs Rangers) is one of football's fiercest rivalries.",
+    "The Maracanã holds 78,838 — once held nearly 200,000 for the 1950 World Cup final.",
+    # ── Coaches ─────────────────────────────────────────────────────────
+    "Pep Guardiola has won league titles in Spain, Germany, and England.",
+    "José Mourinho won the Champions League with Porto (2004) and Inter (2010).",
+    "Carlo Ancelotti is the only coach to win the Champions League 5 times.",
+    "Ancelotti is the only coach to win league titles in all top 5 European leagues.",
+    "Klopp won the Champions League with Liverpool in 2019.",
+    "Antonio Conte won three consecutive Serie A titles with Juventus (2012–2014).",
+    "Diego Simeone has managed Atlético Madrid since December 2011.",
+    "Zinedine Zidane won three consecutive Champions Leagues as Real Madrid coach.",
+    # ── Recent transfers & moves ───────────────────────────────────────
+    "Saudi Pro League signed Ronaldo, Neymar, Benzema, and Mané in 2023.",
+    "Florian Wirtz, Jamal Musiala, and Lamine Yamal are leading the next-gen wave.",
+    "Pedri and Gavi are Barcelona's midfield future, both Spain internationals.",
+    "Cole Palmer scored 22 PL goals in his first Chelsea season (2023/24).",
+    "Phil Foden was named Premier League Player of the Season in 2023/24.",
+    "Bukayo Saka has been Arsenal's most consistent attacker post-Aubameyang.",
+    "Jude Bellingham joined Real Madrid from Dortmund for €103m in 2023.",
+    "Joshua Kimmich is one of the most versatile players in world football.",
+    "Vinícius Júnior finished second in the 2024 Ballon d'Or, behind Rodri.",
+    # ── Misc trivia ─────────────────────────────────────────────────────
+    "Football is the most-watched sport in the world.",
+    "The first official international match was Scotland 0-0 England in 1872.",
+    "FIFA was founded in 1904.",
+    "UEFA was founded in 1954.",
+    "The Champions League was rebranded from the European Cup in 1992.",
+    "Goal-line technology was first used at a World Cup in 2014.",
+    "Penalty shootouts were introduced to the World Cup in 1978.",
+    "Brazil's Ronaldo (R9) won the 2002 World Cup Golden Boot with 8 goals.",
+    "Miroslav Klose is the all-time World Cup top scorer with 16 goals.",
+    "Just Fontaine scored 13 goals at a single World Cup (1958) — still a record.",
+    "Cristiano Ronaldo holds the record for most international caps for a European man.",
+    "Bad Bunny performed at the 2026 World Cup-themed promo events.",
+    "The Golden Boot is awarded to a World Cup's top scorer.",
+    "The Golden Ball goes to a World Cup's best player.",
+    "The Golden Glove goes to a World Cup's best goalkeeper.",
+    "The 2030 World Cup will be co-hosted by Spain, Portugal, and Morocco.",
+    "Three group-stage games of the 2030 World Cup will be played in South America.",
+    "The 2034 World Cup will be hosted by Saudi Arabia.",
+    "The Ballon d'Or moved its calendar in 2022 to follow the European season.",
+    "The FIFA Best award is separate from the Ballon d'Or, voted by national coaches and captains.",
+    # ── Refereeing & rules ──────────────────────────────────────────────
+    "A drop ball restart was changed in 2019 — possession now goes to the team that last touched it.",
+    "Handball rules have been clarified multiple times since 2019.",
+    "Stoppage time at the 2022 World Cup was significantly longer due to a new FIFA directive.",
+    "Semi-automated offside technology debuted at the 2022 World Cup.",
+    "The 'Decisive Goal in Open Play' tiebreaker was used in 2022 group stages.",
+    # ── Last decade highlights ──────────────────────────────────────────
+    "Atlético Madrid won La Liga in 2014 and 2021 under Diego Simeone.",
+    "Sevilla have won the Europa League 7 times — more than any other club.",
+    "PSG reached their first Champions League final in 2020.",
+    "Tottenham reached their first Champions League final in 2019.",
+    "Ajax's run to the 2019 UCL semi-final reminded fans of their golden era.",
+    "Frenkie de Jong, Matthijs de Ligt, and Donny van de Beek emerged from that Ajax side.",
+    "Erling Haaland's 2019 Champions League hat-trick vs Atalanta announced his arrival.",
+    "Kai Havertz scored Chelsea's 2021 Champions League final winner.",
+    "Karim Benzema scored 15 goals in the 2021/22 Champions League knockouts.",
+    "Real Madrid's 2022 UCL run is one of the most dramatic ever.",
+]
+
+
+THINKING_FACTS_HTML = (
+    "<script>\n"
+    "(function() {\n"
+    "  var FACTS = " + __import__("json").dumps(_FOOTBALL_FACTS, ensure_ascii=False) + ";\n"
+    "  function pickFact(prev) {\n"
+    "    var i = Math.floor(Math.random() * FACTS.length);\n"
+    "    if (FACTS[i] === prev && FACTS.length > 1) i = (i + 1) % FACTS.length;\n"
+    "    return FACTS[i];\n"
+    "  }\n"
+    "  var activeIntervals = new WeakMap();\n"
+    "  function attach(spinnerEl) {\n"
+    "    if (activeIntervals.has(spinnerEl)) return;\n"
+    "    var label = spinnerEl.querySelector('div, span, p');\n"
+    "    var txt = (spinnerEl.textContent || '').trim();\n"
+    "    if (txt.indexOf('Thinking') === -1) return;\n"
+    "    var target = label || spinnerEl;\n"
+    "    var current = pickFact(null);\n"
+    "    target.textContent = '🏆 Thinking: ' + current;\n"
+    "    var id = setInterval(function() {\n"
+    "      if (!document.body.contains(spinnerEl)) {\n"
+    "        clearInterval(id);\n"
+    "        return;\n"
+    "      }\n"
+    "      current = pickFact(current);\n"
+    "      target.textContent = '🏆 Thinking: ' + current;\n"
+    "    }, 3000);\n"
+    "    activeIntervals.set(spinnerEl, id);\n"
+    "  }\n"
+    "  var observer = new MutationObserver(function() {\n"
+    "    document.querySelectorAll('[data-testid=\"stSpinner\"]').forEach(attach);\n"
+    "  });\n"
+    "  observer.observe(document.body, { childList: true, subtree: true });\n"
+    "  // Also scan immediately in case a spinner is already on the page.\n"
+    "  document.querySelectorAll('[data-testid=\"stSpinner\"]').forEach(attach);\n"
+    "})();\n"
+    "</script>\n"
+)
+
+
+# ---------------------------------------------------------------------------
 # Suggestion 4: Confidence → Gold Stars
 # ---------------------------------------------------------------------------
 
@@ -1183,62 +1471,15 @@ def confidence_stars_html(score: float, label: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Player images: known top players mapping (fallback when BigQuery unavailable)
+# Player images: lookup via dim_player in BigQuery
 # ---------------------------------------------------------------------------
-
-# Mapping of common player names → image URLs (from reputable CDN sources).
-# These are fallback images; the primary lookup queries dim_player in BigQuery.
-_PLAYER_IMAGE_FALLBACK: dict[str, str] = {
-    "lionel messi": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/95803.jpg",
-    "cristiano ronaldo": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/63706.jpg",
-    "kylian mbappé": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250076908.jpg",
-    "kylian mbappe": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250076908.jpg",
-    "neymar": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250039508.jpg",
-    "harry kane": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250016834.jpg",
-    "kevin de bruyne": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250009912.jpg",
-    "robert lewandowski": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250002229.jpg",
-    "mohamed salah": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250063625.jpg",
-    "vinícius júnior": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250131924.jpg",
-    "vinicius junior": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250131924.jpg",
-    "jude bellingham": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250134977.jpg",
-    "erling haaland": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250116362.jpg",
-    "luka modrić": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/74699.jpg",
-    "luka modric": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/74699.jpg",
-    "antoine griezmann": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250020262.jpg",
-    "rodri": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250081766.jpg",
-    "phil foden": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250115352.jpg",
-    "bukayo saka": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250139465.jpg",
-    "jamal musiala": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250139578.jpg",
-    "pedri": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250137778.jpg",
-    "gavi": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250139560.jpg",
-    "federico valverde": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250101405.jpg",
-    "bruno fernandes": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250066439.jpg",
-    "bernardo silva": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250056731.jpg",
-    "julián álvarez": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250134247.jpg",
-    "julian alvarez": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250134247.jpg",
-    "lautaro martínez": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250081760.jpg",
-    "lautaro martinez": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250081760.jpg",
-    "virgil van dijk": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250024772.jpg",
-    "son heung-min": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250024976.jpg",
-    "heung-min son": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250024976.jpg",
-    "rafael leão": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250115700.jpg",
-    "rafael leao": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250115700.jpg",
-    "khvicha kvaratskhelia": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250142290.jpg",
-    "declan rice": "https://img.uefa.com/imgml/TP/players/1/2026/324x324/250091666.jpg",
-}
-
-
-def _get_player_image_fallback(player_name: str) -> str | None:
-    """Return a fallback image URL for a known player name."""
-    return _PLAYER_IMAGE_FALLBACK.get(player_name.strip().lower())
-
 
 # Cache for BigQuery player lookups to avoid repeated queries
 _player_image_cache: dict[str, str] = {}
 
 
 def get_player_image_url(player_name: str) -> str | None:
-    """Look up a player's image URL from dim_player in BigQuery, falling back to a known list.
+    """Look up a player's image URL from dim_player in BigQuery.
 
     Returns None if no image is available for this player.
     """
@@ -1259,14 +1500,6 @@ def get_player_image_url(player_name: str) -> str | None:
         project = os.environ.get("BIGQUERY_PROJECT_ID")
         dataset = os.environ.get("BIGQUERY_DATASET_ID")
         if project and dataset:
-            sql = f"""
-                SELECT player_name, player_image_url
-                FROM `{project}.{dataset}.dim_player`
-                WHERE LOWER(player_name) = LOWER(@name)
-                LIMIT 1
-            """
-            # Note: run_query doesn't support parameterized queries directly,
-            # so we escape the name safely.
             safe_name = player_name.replace("'", "''")
             sql_final = f"""
                 SELECT player_name, player_image_url
@@ -1281,13 +1514,7 @@ def get_player_image_url(player_name: str) -> str | None:
                     _player_image_cache[key] = str(img_url)
                     return str(img_url)
     except Exception:
-        pass  # BigQuery unavailable — use fallback
-
-    # Fallback to static mapping
-    fallback = _get_player_image_fallback(player_name)
-    if fallback:
-        _player_image_cache[key] = fallback
-        return fallback
+        pass  # BigQuery unavailable
 
     # Mark as not found to avoid repeated lookups
     _player_image_cache[key] = "__NONE__"
@@ -1297,25 +1524,21 @@ def get_player_image_url(player_name: str) -> str | None:
 def inject_player_images(text: str) -> str:
     """Scan text for known player names and embed inline player image cards.
 
-    Uses word-boundary matching on known player names from fallback list
-    and BigQuery dim_player. Only adds image once per player per message.
+    Only matches player names already cached from a prior BigQuery lookup.
+    Adds the image at most once per player per message.
     """
     if not text:
         return text
 
-    # Collect all known player names (fallback + any cached from BQ)
-    known_players = set(_PLAYER_IMAGE_FALLBACK.keys())
-    known_players.update(
+    known_players = {
         k for k, v in _player_image_cache.items() if v != "__NONE__"
-    )
-
+    }
     if not known_players:
         return text
 
-    # Sort by name length descending so "kylian mbappé" matches before "mbappé"
+    # Sort by name length descending so longer names match first
     sorted_players = sorted(known_players, key=lambda n: (-len(n), n))
 
-    # Build regex with word boundaries
     escaped = [re.escape(name) for name in sorted_players if len(name) >= 3]
     if not escaped:
         return text
