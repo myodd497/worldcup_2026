@@ -228,7 +228,9 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
 
 # ── Rotating football-fact spinner label (pure client-side JS) ──
-st.markdown(THINKING_FACTS_HTML, unsafe_allow_html=True)
+# Must use components.v1.html — st.markdown strips <script> tags.
+import streamlit.components.v1 as _components
+_components.html(THINKING_FACTS_HTML, height=0, width=0)
 
 # ── Title area: trophy logo + title, right at the top ──
 st.markdown(
