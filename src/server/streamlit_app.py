@@ -24,6 +24,7 @@ from src.server.worldcup_style import (
     get_world_cup_css,
     world_cup_header_html,
     CROWD_ROAR_HTML,
+    THINKING_FACTS_HTML,
     confidence_stars_html,
     inject_flag_emojis,
     inject_player_images,
@@ -225,6 +226,9 @@ st.markdown(get_world_cup_css(), unsafe_allow_html=True)
 
 # ── Crowd roar audio on assistant reply (Web Audio API, no external file) ──
 st.markdown(CROWD_ROAR_HTML, unsafe_allow_html=True)
+
+# ── Rotating football-fact spinner label (pure client-side JS) ──
+st.markdown(THINKING_FACTS_HTML, unsafe_allow_html=True)
 
 # ── Title area: trophy logo + title, right at the top ──
 st.markdown(
