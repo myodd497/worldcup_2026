@@ -1440,7 +1440,7 @@ THINKING_FACTS_HTML = (
     "      }\n"
     "      current = pickFact(current);\n"
     "      label.textContent = '🏆 Thinking: ' + current;\n"
-    "    }, 3000);\n"
+    "    }, 5000);\n"
     "    activeIntervals.set(spinnerEl, id);\n"
     "  }\n"
     "  function scan() {\n"
