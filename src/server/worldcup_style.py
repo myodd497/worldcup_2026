@@ -467,7 +467,8 @@ def _build_world_cup_css() -> str:
     z-index: 1;
     padding-left: 10% !important;
     padding-right: 10% !important;
-    padding-bottom: 8.5rem !important;
+    padding-bottom: 10rem !important;
+    scroll-padding-bottom: 10rem !important;
     padding-top: 0.2rem !important;
     max-width: 100% !important;
     display: flex;
@@ -936,7 +937,9 @@ h1 {{
     [data-testid="stMainBlockContainer"] {{
         padding-left: 1rem !important;
         padding-right: 1rem !important;
-        padding-bottom: 7.5rem !important;
+        /* Lift (~70px) + input height (~60px) + safe-area + buffer */
+        padding-bottom: calc(170px + env(safe-area-inset-bottom)) !important;
+        scroll-padding-bottom: calc(170px + env(safe-area-inset-bottom)) !important;
     }}
 
     /* Smaller title so it fits one line next to the trophy */
