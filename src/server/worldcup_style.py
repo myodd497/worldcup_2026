@@ -922,6 +922,76 @@ h1 {{
 ::-webkit-scrollbar-thumb:hover {{
     background: rgba(255, 215, 0, 0.3);
 }}
+
+/* ════════════════════════════════════════════════════════════════════
+   MOBILE OVERRIDES (phones / narrow viewports)
+   - Shrinks the trophy + title so "World Cup 2026" stays on ONE line.
+   - Reduces side padding so the chat card uses the full width.
+   - Leaves room on the right of the chat input so the send button is
+     not hidden behind Streamlit Cloud's floating "Manage app" button.
+   ════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {{
+    /* Tighter side padding on the main block so content breathes */
+    [data-testid="stAppViewBlockContainer"],
+    [data-testid="stMainBlockContainer"] {{
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-bottom: 7.5rem !important;
+    }}
+
+    /* Smaller title so it fits one line next to the trophy */
+    h1 {{
+        font-size: 1.8rem !important;
+        line-height: 1.1 !important;
+        white-space: nowrap;
+    }}
+    h2 {{ font-size: 1.3rem !important; }}
+    h3 {{ font-size: 1.1rem !important; }}
+
+    /* Shrink the trophy logo dramatically on mobile (was 10.5em) */
+    .wc-title-icon {{
+        width: 2.4em !important;
+        height: 2.4em !important;
+        margin-right: 0.25em !important;
+    }}
+
+    /* Chat input: leave a 70px gutter on the right for Streamlit Cloud's
+       floating control button so the send arrow is always tappable. */
+    [data-testid="stChatInput"] {{
+        left: 0 !important;
+        right: 0 !important;
+        transform: none !important;
+        width: auto !important;
+        margin: 0 70px 0 12px !important;
+        bottom: max(12px, env(safe-area-inset-bottom)) !important;
+    }}
+
+    /* Chat card uses available width */
+    [data-testid="stChatMessageContainer"] {{
+        max-width: 100% !important;
+        max-height: 50vh;
+    }}
+
+    /* Dashboard cards stack vertically and get a sensible height */
+    .next-match-card,
+    .standings-card,
+    .topscorers-card {{
+        height: auto !important;
+        min-height: 0 !important;
+    }}
+}}
+
+/* Extra-small phones */
+@media (max-width: 420px) {{
+    h1 {{ font-size: 1.5rem !important; }}
+    .wc-title-icon {{
+        width: 2em !important;
+        height: 2em !important;
+    }}
+    [data-testid="stChatInput"] {{
+        margin: 0 64px 0 8px !important;
+    }}
+}}
 </style>
 """
 
