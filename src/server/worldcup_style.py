@@ -955,21 +955,80 @@ h1 {{
         margin-right: 0.25em !important;
     }}
 
-    /* Chat input: leave a 70px gutter on the right for Streamlit Cloud's
-       floating control button so the send arrow is always tappable. */
+    /* Chat input: keep full width, but lift it ABOVE Streamlit Cloud's
+       floating control buttons (Manage app / +) so the send arrow is
+       not covered. ~70px clearance is enough on iOS Safari. */
     [data-testid="stChatInput"] {{
-        left: 0 !important;
-        right: 0 !important;
-        transform: none !important;
-        width: auto !important;
-        margin: 0 70px 0 12px !important;
-        bottom: max(12px, env(safe-area-inset-bottom)) !important;
+        left: 50% !important;
+        right: auto !important;
+        transform: translateX(-50%) !important;
+        width: calc(100vw - 1.5rem) !important;
+        margin: 0 !important;
+        bottom: calc(70px + env(safe-area-inset-bottom)) !important;
     }}
 
     /* Chat card uses available width */
     [data-testid="stChatMessageContainer"] {{
         max-width: 100% !important;
         max-height: 50vh;
+    }}
+
+    /* ── Chat OUTPUT (assistant + user bubbles) ── */
+    /* Tighter padding, smaller font, and proper word-wrap so long names,
+       URLs, or table-like answers don't overflow horizontally. */
+    [data-testid="stChatMessage"] {{
+        padding: 10px 12px !important;
+        margin-bottom: 6px !important;
+        font-size: 0.92rem !important;
+        line-height: 1.45 !important;
+    }}
+    [data-testid="stChatMessage"] p,
+    [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] span {{
+        font-size: 0.92rem !important;
+        line-height: 1.45 !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }}
+    [data-testid="stChatMessage"] h1 {{ font-size: 1.2rem !important; }}
+    [data-testid="stChatMessage"] h2 {{ font-size: 1.05rem !important; }}
+    [data-testid="stChatMessage"] h3 {{ font-size: 0.95rem !important; }}
+
+    /* Shrink assistant avatar (the trophy) so it doesn't dominate the bubble */
+    [data-testid="stChatMessageAvatar"] {{
+        width: 28px !important;
+        height: 28px !important;
+        min-width: 28px !important;
+        flex-shrink: 0 !important;
+    }}
+
+    /* Tables / code blocks inside replies: scroll horizontally instead of
+       breaking the layout. */
+    [data-testid="stChatMessage"] table,
+    [data-testid="stChatMessage"] pre {{
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        font-size: 0.8rem !important;
+    }}
+    [data-testid="stChatMessage"] pre code {{
+        white-space: pre;
+    }}
+
+    /* Inline player image cards: scale down so 2-3 fit per line */
+    .player-card {{
+        font-size: 0.85em !important;
+        padding: 4px 8px 4px 4px !important;
+        gap: 6px !important;
+    }}
+    .player-card img {{
+        width: 28px !important;
+        height: 28px !important;
+    }}
+
+    /* Confidence stars: a touch smaller */
+    .confidence-stars {{
+        font-size: 0.95em !important;
     }}
 
     /* Dashboard cards stack vertically and get a sensible height */
@@ -989,7 +1048,9 @@ h1 {{
         height: 2em !important;
     }}
     [data-testid="stChatInput"] {{
-        margin: 0 64px 0 8px !important;
+        margin: 0 !important;
+        width: calc(100vw - 1rem) !important;
+        bottom: calc(70px + env(safe-area-inset-bottom)) !important;
     }}
 }}
 </style>
